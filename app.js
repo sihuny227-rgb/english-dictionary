@@ -16,6 +16,7 @@
     rate: 0.9, voice: '', autoSpeak: true,
     quizSize: 10, quizType: 'mixed',
     notify: { on: false, every: 60, from: 9, to: 22, weak: true },
+    ghToken: '', ghGist: '',            // GitHub 연동 (이 기기에만 저장)
   };
 
   function normalizeSettings(s) {
@@ -41,6 +42,8 @@
       credit: w.credit && w.credit.name ? { name: String(w.credit.name), url: /^https:\/\//.test(w.credit.url || '') ? String(w.credit.url) : '' } : null,
       rev: Number(w.rev) || 0,
       addedAt: added,
+      // 마지막으로 바뀐 시각: 두 기기의 단어장을 합칠 때 더 최근 것을 남겨요
+      updatedAt: Number(w.updatedAt) || Math.max(added, Number(w.srs && w.srs.last) || 0),
       srs: Object.assign(Core.newSrs(added), w.srs || {}),
     };
   }
@@ -53,7 +56,7 @@
       version: 1,
       words: (Array.isArray(d.words) ? d.words : []).map(normalizeWord).filter(Boolean),
       settings: normalizeSettings(d.settings),
-      meta: Object.assign({ nextPopupAt: 0, recent: [], pending: null }, d.meta || {}),
+      meta: Object.assign({ nextPopupAt: 0, recent: [], pending: null, deleted: {}, lastSync: 0 }, d.meta || {}),
     };
   }
 
@@ -71,11 +74,19 @@
   const byId = id => db.words.find(w => w.id === id);
   const findSaved = word => db.words.find(w => Core.norm(w.word) === Core.norm(word));
 
+  // 단어가 바뀔 때마다 부르면 바뀐 시각을 적고, 연동 중이면 잠시 뒤 GitHub에 올려요
+  function touch(w) {
+    w.updatedAt = now();
+    Sync.markDirty();
+  }
+
   function addWord(entry) {
     const t = now();
-    const w = normalizeWord(Object.assign({}, entry, { id: uid(), addedAt: t, srs: Core.newSrs(t) }));
+    const w = normalizeWord(Object.assign({}, entry, { id: uid(), addedAt: t, updatedAt: t, srs: Core.newSrs(t) }));
     db.words.unshift(w);
+    delete db.meta.deleted[Core.wordKey(w)];
     save();
+    Sync.markDirty();
     return w;
   }
 
@@ -84,13 +95,18 @@
     const i = db.words.findIndex(w => w.id === id);
     if (i < 0) return;
     lastRemoved = { word: db.words[i], index: i };
+    db.meta.deleted[Core.wordKey(db.words[i])] = now();   // 다른 기기에서도 지우도록 기록해요
     db.words.splice(i, 1);
     save();
+    Sync.markDirty();
   }
   function undoRemove() {
     if (!lastRemoved) return;
-    db.words.splice(Math.min(lastRemoved.index, db.words.length), 0, lastRemoved.word);
+    const w = lastRemoved.word;
+    db.words.splice(Math.min(lastRemoved.index, db.words.length), 0, w);
+    delete db.meta.deleted[Core.wordKey(w)];
     lastRemoved = null;
+    touch(w);
     save();
     refreshAll();
   }
@@ -274,6 +290,7 @@
       if (e.meanings.length) w.credit = e.credit || null;
       w.source = e.source;
       w.rev = e.rev || 0;
+      touch(w);
       save();
       refreshAll();
       if (where === 'sheet') openDetail(id); else showSaved(w, [r.warning]);
@@ -330,6 +347,7 @@
       // 뜻을 직접 고쳤으면 출처를 '직접 입력'으로 바꿔요 (한꺼번에 다시 찾기에서도 건드리지 않아요)
       if (JSON.stringify(data.meanings) !== JSON.stringify(w.meanings)) w.credit = { name: '직접 입력', url: '' };
       Object.assign(w, data);
+      touch(w);
       save();
       refreshAll();
       if (inSheet) openDetail(id); else showSaved(w);
@@ -547,6 +565,7 @@
     s.correct = correct;
     if (!item.retry) {
       w.srs = Core.review(w.srs, correct ? (s.hint ? 1 : 2) : 0, now());
+      touch(w);
       save();
       s.results.push({ wordId: w.id, correct });
       if (!correct) s.queue.push({ wordId: w.id, type: item.type, retry: true });
@@ -646,7 +665,11 @@
   };
 
   function onVisible() {
-    if (document.visibilityState !== 'visible') return;
+    if (document.visibilityState !== 'visible') {
+      if (Sync.timer) Sync.run();   // 앱을 내리기 전에 아직 안 올린 변경을 올려요
+      return;
+    }
+    Sync.run();                     // 다시 볼 때마다 다른 기기에서 바뀐 걸 받아요
     if (db.meta.pending) {
       const w = byId(db.meta.pending);
       db.meta.pending = null;
@@ -704,6 +727,7 @@
     renderVoiceOptions();
     renderNotifyStatus();
     renderRefreshBox();
+    renderSyncBox();
   }
 
   function bindSettings() {
@@ -806,6 +830,7 @@
           if (e.defs.length) cur.defs = e.defs;
           if (e.examples.length) cur.examples = e.examples;
           cur.rev = e.rev || Dict.FREE_REV;
+          touch(cur);
           changed++;
           save();
         }
@@ -876,6 +901,7 @@
           if (e.meanings.length) { cur.meanings = e.meanings; cur.defs = e.defs; cur.credit = e.credit; }
           if (e.examples.length) cur.examples = e.examples;
           cur.source = 'ai';
+          touch(cur);
           changed++;
           save();
         }
@@ -892,12 +918,140 @@
     toast(stop ? changed + '개를 바꾸고 멈췄어요: ' + stop : list.length + '개 중 ' + changed + '개를 AI 뜻·예문으로 바꿨어요');
   }
 
+  /* ---------- PC·휴대폰 연동 (GitHub gist) ----------
+     받기 → 합치기 → (달라졌으면) 올리기. 단어를 바꾸면 3초 뒤에, 앱을 다시 볼 때마다, 열어 둔 동안 5분마다 해요. */
+
+  const GH_TOKEN_URL = 'https://github.com/settings/tokens/new?scopes=gist&description=' + encodeURIComponent('english-dictionary-sync');
+
+  const packData = m => ({ app: 'my-english-dictionary', version: 1, updatedAt: now(), words: m.words, deleted: m.deleted });
+
+  const Sync = {
+    timer: null, busy: false, again: false, error: '', lastAttempt: 0,
+    on() { return !!(db.settings.ghToken && db.settings.ghGist); },
+    markDirty() {
+      if (!this.on()) return;
+      clearTimeout(this.timer);
+      this.timer = setTimeout(() => this.run(), 3000);
+    },
+    setStatus(error) {
+      this.error = error || '';
+      renderSyncStatus();
+      updateBadges();
+    },
+    async run(manual) {
+      if (!this.on()) return false;
+      if (this.busy) { this.again = true; return false; }
+      clearTimeout(this.timer);
+      this.timer = null;
+      this.lastAttempt = now();
+      if (navigator.onLine === false) { this.setStatus('인터넷에 연결되면 동기화해요'); return false; }
+      this.busy = true;
+      renderSyncStatus();
+      const token = db.settings.ghToken, id = db.settings.ghGist;
+      try {
+        const raw = await GistSync.readGist(token, id);
+        const remote = { words: (Array.isArray(raw.words) ? raw.words : []).map(normalizeWord).filter(Boolean), deleted: raw.deleted || {} };
+        // 받는 동안 바뀐 것도 놓치지 않게, 받은 뒤의 지금 단어장과 합쳐요
+        const local = { words: db.words, deleted: db.meta.deleted };
+        const merged = Core.mergeWords(local, remote, now());
+        const fp = Core.syncFingerprint(merged);
+        const localChanged = fp !== Core.syncFingerprint(local);
+        if (localChanged) { db.words = merged.words; db.meta.deleted = merged.deleted; }
+        if (fp !== Core.syncFingerprint(remote)) await GistSync.writeGist(token, id, packData(merged));
+        db.meta.lastSync = now();
+        save();
+        this.setStatus('');
+        if (localChanged) afterRemoteChange();
+        if (manual) toast('동기화했어요');
+        return true;
+      } catch (e) {
+        this.setStatus(e.message || '동기화하지 못했어요');
+        if (manual) toast('동기화하지 못했어요: ' + (e.message || '오류'));
+        return false;
+      } finally {
+        this.busy = false;
+        renderSyncStatus();
+        if (this.again) { this.again = false; this.markDirty(); }
+      }
+    },
+    async connect(btn) {
+      const input = $('#ghToken');
+      const token = String(input.value || '').trim();
+      if (!token) { toast('GitHub 토큰을 붙여 넣으세요.'); input.focus(); return; }
+      btn.disabled = true;
+      btn.textContent = 'GitHub에 연결하는 중…';
+      try {
+        let id = await GistSync.findGist(token);
+        const created = !id;
+        if (created) id = await GistSync.createGist(token, packData({ words: db.words, deleted: db.meta.deleted }));
+        db.settings.ghToken = token;
+        db.settings.ghGist = id;
+        db.meta.lastSync = created ? now() : 0;
+        save();
+        renderSyncBox();
+        if (!created) await this.run();
+        else this.setStatus('');
+        toast(created ? '연동을 시작했어요. 다른 기기에서도 토큰을 넣어 주세요.' : '연동했어요. 다른 기기의 단어장과 합쳤어요 (단어 ' + db.words.length + '개)');
+      } catch (e) {
+        btn.disabled = false;
+        btn.textContent = '연동하기';
+        $('#syncStatus').textContent = '⚠ ' + (e.message || '연결하지 못했어요');
+      }
+    },
+    disconnect() {
+      if (!confirm('이 기기에서 연동을 끊을까요?\n이 기기의 단어장과 GitHub에 저장된 단어는 그대로 남아요.')) return;
+      db.settings.ghToken = '';
+      db.settings.ghGist = '';
+      this.error = '';
+      save();
+      renderSyncBox();
+      updateBadges();
+      toast('이 기기의 연동을 끊었어요');
+    },
+  };
+
+  // 다른 기기에서 바뀐 내용을 받았을 때: 퀴즈를 푸는 중이면 화면은 그대로 두고 숫자만 고쳐요
+  function afterRemoteChange() {
+    if (state.quiz && !state.quiz.done && state.tab === 'quiz') { updateBadges(); return; }
+    refreshAll();
+  }
+
+  function renderSyncStatus() {
+    const el = $('#syncStatus');
+    if (!el || !Sync.on()) return;
+    if (Sync.busy) el.textContent = '동기화 중…';
+    else if (Sync.error) el.textContent = '⚠ ' + Sync.error;
+    else el.textContent = db.meta.lastSync ? '마지막 동기화: ' + fmtClock(db.meta.lastSync) + ' · 단어 ' + db.words.length + '개' : '아직 동기화 전이에요';
+  }
+
+  function renderSyncBox() {
+    const box = $('#syncBox');
+    if (!box) return;
+    if (Sync.on()) {
+      box.innerHTML = '<p class="notice" style="background:var(--ok-soft)">연동 중이에요. 단어를 저장·수정·삭제하거나 퀴즈를 풀면 잠시 뒤 GitHub에 올라가고, 앱을 열 때마다 다른 기기에서 바뀐 걸 받아 와요.</p>' +
+        '<p class="muted" id="syncStatus"></p>' +
+        '<div class="btns"><button class="btn ghost sm" data-act="sync-now">지금 동기화</button><button class="btn ghost sm" data-act="sync-off">이 기기 연동 끊기</button></div>';
+      renderSyncStatus();
+      return;
+    }
+    box.innerHTML = '<p class="muted" style="margin-top:0">내 GitHub 계정의 비공개 저장 공간(gist)에 단어장을 저장해서, PC와 휴대폰이 같은 단어장과 퀴즈 기록을 써요. 기기마다 한 번씩 토큰을 넣으면 돼요.</p>' +
+      '<details class="howto"><summary>GitHub 토큰 만드는 법</summary><ol>' +
+      '<li><a href="' + GH_TOKEN_URL + '" target="_blank" rel="noopener">여기를 눌러 GitHub 토큰 만들기</a>를 열어요 (GitHub에 로그인돼 있어야 해요).</li>' +
+      '<li><b>Expiration</b>(만료)을 <b>No expiration</b>이나 1년으로 골라요. 아래 <b>Select scopes</b>에서 <b>gist</b> 하나만 체크돼 있으면 돼요.</li>' +
+      '<li>맨 아래 <b>Generate token</b>을 누르고, 나온 토큰(ghp_로 시작)을 복사해요. 토큰은 이때 한 번만 보여요.</li>' +
+      '<li>아래 칸에 붙여 넣고 <b>연동하기</b>를 눌러요. 다른 기기에서도 같은 토큰을 넣거나, 그 기기에서 같은 방법으로 토큰을 하나 더 만들어 넣어요.</li>' +
+      '</ol><p class="muted">토큰은 이 기기에만 저장되고 GitHub(api.github.com)으로만 보내요. gist 권한만 있어서 다른 저장소는 건드리지 못해요. 필요 없어지면 GitHub → Settings → Developer settings → Personal access tokens에서 지우면 돼요.</p></details>' +
+      '<span class="lbl">GitHub 토큰</span><input id="ghToken" type="password" placeholder="ghp_…" autocomplete="off" spellcheck="false">' +
+      '<div class="btns"><button class="btn" data-act="sync-connect">연동하기</button></div>' +
+      '<p class="muted" id="syncStatus"></p>';
+  }
+
   /* ---------- 백업 ---------- */
 
   function backupSave() {
     const data = {
       app: 'my-english-dictionary', version: 1, exportedAt: new Date().toISOString(),
-      words: db.words, settings: Object.assign({}, db.settings, { aiKey: '' }),
+      words: db.words, settings: Object.assign({}, db.settings, { aiKey: '', ghToken: '', ghGist: '' }),
     };
     const d = new Date();
     const ymd = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -922,20 +1076,23 @@
       const cur = findSaved(w.word);
       if (!cur) {
         if (byId(w.id)) w.id = uid();
+        w.updatedAt = now();
+        delete db.meta.deleted[Core.wordKey(w)];
         db.words.push(w);
         added++;
       } else if ((w.srs.last || 0) > (cur.srs.last || 0)) {
-        Object.assign(cur, w, { id: cur.id });
+        Object.assign(cur, w, { id: cur.id, updatedAt: now() });
         updated++;
       }
     }
     if (data.settings) {
-      const key = db.settings.aiKey;
-      db.settings = normalizeSettings(data.settings);
-      db.settings.aiKey = key;
+      // 이 기기의 비밀 정보(API 키, GitHub 연동)는 그대로 둬요
+      const keep = { aiKey: db.settings.aiKey, ghToken: db.settings.ghToken, ghGist: db.settings.ghGist };
+      db.settings = Object.assign(normalizeSettings(data.settings), keep);
     }
     db.words.sort((a, b) => b.addedAt - a.addedAt);
     save();
+    Sync.markDirty();
     renderSettings();
     Popup.schedule();
     refreshAll();
@@ -948,7 +1105,8 @@
     const t = now();
     const n = db.words.length;
     const due = Core.dueWords(db.words, t).length;
-    $('#summary').textContent = n ? '단어 ' + n + '개 · 지금 복습할 단어 ' + due + '개' : '아직 저장한 단어가 없어요';
+    $('#summary').textContent = (n ? '단어 ' + n + '개 · 지금 복습할 단어 ' + due + '개' : '아직 저장한 단어가 없어요') +
+      (Sync.on() ? (Sync.error ? ' · 연동 확인 필요' : ' · PC·휴대폰 연동 중') : '');
     $('#listBadge').hidden = !n;
     $('#listBadge').textContent = n;
     $('#dueBadge').hidden = !due;
@@ -1048,6 +1206,9 @@
         break;
       case 'quiz-home': state.quiz = null; renderQuiz(); break;
       case 'refresh-meanings': refreshOldMeanings(el); break;
+      case 'sync-connect': Sync.connect(el); break;
+      case 'sync-now': Sync.run(true); break;
+      case 'sync-off': Sync.disconnect(); break;
       case 'ai-refresh': aiRefreshAll(el); break;
       case 'popup-next': { const w = Popup.pick(); if (w) popupCard(w); break; }
       case 'quiz-from-popup': closeSheet(); startQuiz(false); break;
@@ -1112,7 +1273,13 @@
       openDetail(wid);
     }
     Popup.tick();
-    setInterval(() => { Popup.tick(); if (!state.quiz || state.quiz.done) updateBadges(); }, 20000);
+    setInterval(() => {
+      Popup.tick();
+      if (!state.quiz || state.quiz.done) updateBadges();
+      // 열어 둔 동안 5분마다 다른 기기에서 바뀐 걸 받아요
+      if (Sync.on() && document.visibilityState === 'visible' && now() - Math.max(db.meta.lastSync || 0, Sync.lastAttempt || 0) > 5 * 60 * 1000) Sync.run();
+    }, 20000);
+    if (Sync.on()) setTimeout(() => Sync.run(), 800);
     registerSW();
   }
 

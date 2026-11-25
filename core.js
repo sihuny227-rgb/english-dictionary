@@ -267,6 +267,46 @@
     return pool[pool.length - 1];
   }
 
+  /* ---------- 두 기기의 단어장 합치기 (GitHub 연동) ----------
+     · 같은 단어(철자가 같으면 같은 단어)는 더 나중에 바뀐 쪽(updatedAt)을 남겨요. 퀴즈 기록도 함께 따라가요.
+     · 지운 단어는 '지운 시각'을 남겨 두고, 그보다 나중에 바뀌지 않았으면 다른 기기에서도 지워요.
+     · 지운 기록은 180일이 지나면 정리해요. */
+
+  function wordKey(w) { return norm(w.word); }
+
+  function mergeWords(local, remote, now) {
+    const deleted = Object.assign({}, (remote && remote.deleted) || {});
+    for (const [k, t] of Object.entries((local && local.deleted) || {})) {
+      if (!(deleted[k] >= t)) deleted[k] = t;
+    }
+    const map = new Map();
+    const take = (w, preferOnTie) => {
+      const k = wordKey(w);
+      const cur = map.get(k);
+      const a = w.updatedAt || 0, b = cur ? (cur.updatedAt || 0) : -1;
+      if (!cur || a > b || (a === b && preferOnTie)) map.set(k, w);
+    };
+    for (const w of (remote && remote.words) || []) take(w, false);
+    for (const w of (local && local.words) || []) take(w, true);
+    const words = [];
+    for (const [k, w] of map) {
+      if (deleted[k] && deleted[k] >= (w.updatedAt || 0)) continue;
+      if (deleted[k]) delete deleted[k];      // 지운 뒤에 다시 넣은 단어
+      words.push(w);
+    }
+    for (const k of Object.keys(deleted)) if (now - deleted[k] > 180 * DAY) delete deleted[k];
+    words.sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+    return { words, deleted };
+  }
+
+  // 내용이 같은지 비교할 때 쓰는 고정된 글자열 (단어 순서·열쇠 순서와 상관없이)
+  function syncFingerprint(data) {
+    const sortKeys = v => Array.isArray(v) ? v.map(sortKeys)
+      : v && typeof v === 'object' ? Object.keys(v).sort().reduce((o, k) => (o[k] = sortKeys(v[k]), o), {}) : v;
+    const words = ((data && data.words) || []).slice().sort((a, b) => wordKey(a) < wordKey(b) ? -1 : wordKey(a) > wordKey(b) ? 1 : 0);
+    return JSON.stringify(sortKeys({ words, deleted: (data && data.deleted) || {} }));
+  }
+
   /* ---------- 보기 좋은 시간 표시 ---------- */
 
   // 반올림한 뒤에 단위를 골라요 (59분 40초 → '60분'이 아니라 '1시간')
@@ -293,6 +333,7 @@
     wordPattern, findWord, checkTyped, norm, meaningText, posOf, shuffle,
     buildQuestion, hintFor,
     inWindow, alignToWindow, nextPopupTime, pickPopupWord,
+    wordKey, mergeWords, syncFingerprint,
     fmtDuration, fmtUntil,
   };
 
