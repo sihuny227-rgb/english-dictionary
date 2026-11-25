@@ -352,8 +352,8 @@
       meanings: {
         type: 'array',
         items: {
-          type: 'object', additionalProperties: false, required: ['pos', 'ko'],
-          properties: { pos: { type: 'string' }, ko: { type: 'string' } },
+          type: 'object', additionalProperties: false, required: ['pos', 'ko', 'en'],
+          properties: { pos: { type: 'string' }, ko: { type: 'string' }, en: { type: 'string' } },
         },
       },
       examples: {
@@ -367,69 +367,92 @@
   };
 
   const AI_SYSTEM = [
-    'You are an English–Korean learner\'s dictionary for a Korean adult studying English.',
+    'You are an English–Korean learner\'s dictionary, in the style of the Cambridge English–Korean Dictionary, for a Korean adult (intermediate level) studying English.',
     'The user sends one English word or phrase (it may be misspelled or inflected), or a Korean word.',
     'Return the entry for the English base form (for Korean input, the most common English equivalent).',
     '- word: the corrected base form, lowercase unless it is a proper noun.',
     '- phonetic: American IPA between slashes, e.g. /rɪˈlʌktənt/.',
-    '- meanings: the 1–3 most common senses, most common first. pos in Korean (명사, 동사, 형용사, 부사, 전치사, 접속사, 대명사, 감탄사, 구동사, 숙어). ko: short Korean dictionary glosses separated by commas, e.g. "꺼리는, 마지못해 하는".',
-    '- examples: exactly 3 natural everyday sentences of 7–15 words. Each must contain the word itself (an inflected form is fine). Cover different senses when possible. ko: a natural Korean translation.',
+    '- meanings: the 1–3 most common senses that a learner needs, most common first; skip rare, technical and archaic senses.',
+    '  pos: Korean part of speech (명사, 동사, 형용사, 부사, 전치사, 접속사, 대명사, 감탄사, 구동사, 숙어).',
+    '  ko: the Korean equivalents a good Korean dictionary would give, 1–4 short glosses separated by commas, in natural Korean (e.g. "꺼리는, 마지못해 하는").',
+    '  en: a short, simple English definition for learners (under 15 words).',
+    '- examples: exactly 3 natural, everyday sentences of 8–15 words, the kind found in a learner\'s dictionary. Each must contain the word itself (an inflected form is fine). Use the senses in meanings, most common first. Avoid names like Tom and Mary.',
+    '  ko: a natural Korean translation, not word-for-word.',
     '- If the input is not a real English or Korean word or phrase, set found to false and leave the other fields empty.',
   ].join('\n');
 
+  const JSON_ONLY = '\nReply with only one JSON object with the keys found, word, phonetic, meanings (pos, ko, en) and examples (en, ko), and nothing else.';
+
+  function readAIJson(text) {
+    try { return JSON.parse(text); } catch (e) { /* 아래에서 다시 시도 */ }
+    const a = text.indexOf('{'), b = text.lastIndexOf('}');
+    if (a >= 0 && b > a) { try { return JSON.parse(text.slice(a, b + 1)); } catch (e) { /* 실패 */ } }
+    return null;
+  }
+
   async function aiLookup(input, key, model) {
-    const body = {
-      model,
-      max_tokens: 4000,
-      system: AI_SYSTEM,
-      output_config: { effort: 'low', format: { type: 'json_schema', schema: AI_SCHEMA } },
-      messages: [{ role: 'user', content: input }],
-    };
     const headers = {
       'content-type': 'application/json',
       'x-api-key': key,
       'anthropic-version': '2026-10-21',
       'anthropic-dangerous-direct-browser-access': 'true',
     };
-    // Opus 5.5가 드물게 요청을 거절하면 서버가 다른 모델로 다시 시도해요
-    const withFallback = /^claude-opus-5-5/.test(model);
-    const send = fb => {
+    // 1) 정해진 JSON 모양으로 답하게 하고, Opus 5.5가 드물게 거절하면 서버가 다른 모델로 다시 시도해요.
+    // 2) 요청 모양이 거부되면(400) 더 단순한 모양으로 한 번씩 다시 보내요.
+    const fallback = /^claude-opus-5-5/.test(model);
+    const attempts = [
+      { fallback, structured: true },
+      { fallback: false, structured: true },
+      { fallback: false, structured: false },
+    ].filter((a, i, all) => i === 0 || a.fallback !== all[i - 1].fallback || a.structured !== all[i - 1].structured);
+    let data = null;
+    for (let i = 0; i < attempts.length; i++) {
+      const a = attempts[i];
       const h = Object.assign({}, headers);
-      const b = Object.assign({}, body);
-      if (fb) { h['anthropic-beta'] = 'server-side-fallback-2026-07-01'; b.fallbacks = 'default'; }
-      return getJSON('https://api.anthropic.com/v1/messages', { method: 'POST', headers: h, body: JSON.stringify(b) }, 60000);
-    };
-    let data;
-    try {
-      data = await send(withFallback);
-    } catch (e) {
-      if (withFallback && e.status === 400) data = await send(false);
-      else throw e;
+      const body = {
+        model,
+        max_tokens: 4000,
+        system: AI_SYSTEM + (a.structured ? '' : JSON_ONLY),
+        output_config: a.structured ? { effort: 'low', format: { type: 'json_schema', schema: AI_SCHEMA } } : { effort: 'low' },
+        messages: [{ role: 'user', content: input }],
+      };
+      if (a.fallback) { h['anthropic-beta'] = 'server-side-fallback-2026-07-01'; body.fallbacks = 'default'; }
+      try {
+        data = await getJSON('https://api.anthropic.com/v1/messages', { method: 'POST', headers: h, body: JSON.stringify(body) }, 60000);
+        break;
+      } catch (e) {
+        const retryable = e.status === 400 && !/credit|balance|api.?key/i.test(e.message || '');
+        if (!retryable || i === attempts.length - 1) throw e;
+      }
     }
     if (data.stop_reason === 'refusal') throw new LookupError('AI가 이 단어를 처리하지 않았어요', 'refusal');
     if (data.stop_reason === 'max_tokens') throw new LookupError('AI 답이 너무 길어서 끊겼어요', 'ai');
     const text = (data.content || []).filter(b => b.type === 'text').map(b => b.text).join('');
-    let j;
-    try { j = JSON.parse(text); } catch (e) { throw new LookupError('AI 답을 읽지 못했어요', 'ai'); }
+    const j = readAIJson(text);
+    if (!j) throw new LookupError('AI 답을 읽지 못했어요', 'ai');
     if (!j.found || !j.word) throw new LookupError('뜻을 찾지 못했어요', 'notfound');
+    const means = (Array.isArray(j.meanings) ? j.meanings : []).filter(m => m && m.ko).slice(0, 3);
     return {
       word: String(j.word).trim(),
-      phonetic: j.phonetic || '',
+      phonetic: String(j.phonetic || ''),
       audio: '',
-      meanings: (j.meanings || []).filter(m => m && m.ko).slice(0, 3),
-      defs: [],
-      examples: (j.examples || []).filter(x => x && x.en).slice(0, 3).map(x => ({ en: x.en.trim(), ko: (x.ko || '').trim() })),
+      meanings: means.map(m => ({ pos: String(m.pos || ''), ko: String(m.ko).trim() })),
+      defs: means.filter(m => m.en).map(m => ({ pos: String(m.pos || ''), en: String(m.en).trim() })),
+      examples: (Array.isArray(j.examples) ? j.examples : []).filter(x => x && x.en).slice(0, 3).map(x => ({ en: String(x.en).trim(), ko: String(x.ko || '').trim() })),
       source: 'ai',
       credit: { name: 'AI (Claude)', url: '' },
     };
   }
 
   function aiErrorText(e) {
+    if (e.code === 'timeout') return 'AI 응답이 너무 늦어요';
+    if (e.code === 'notfound') return '뜻을 찾지 못했어요';
     if (e.status === 401) return 'API 키가 맞지 않아요';
     if (e.status === 403) return 'API 키 권한을 확인하세요';
     if (e.status === 429) return '요청이 너무 많아요. 잠시 후 다시 해 보세요';
-    if (e.status === 400 && /credit|balance/i.test(e.message)) return 'API 크레딧이 부족해요';
-    if (e.status >= 500 || e.status === 529) return 'AI 서버가 바빠요';
+    if (e.status === 400 && /credit|balance/i.test(e.message || '')) return 'API 크레딧(잔액)이 부족해요';
+    if (e.status >= 500) return 'AI 서버가 바빠요. 잠시 후 다시 해 보세요';
+    if (!e.status && !e.code) return '인터넷 연결을 확인하세요';
     return e.message || 'AI 오류';
   }
 
@@ -454,5 +477,5 @@
     return { meanings: r.meanings, credit: { name: '위키낱말사전', url: 'https://ko.wiktionary.org/wiki/' + encodeURIComponent(r.title || word) } };
   }
 
-  root.Dict = { lookup, dictionaryMeanings, LookupError, HANGUL, parseKoWiktionary, lemmaCandidates };
+  root.Dict = { lookup, aiLookup, aiErrorText, dictionaryMeanings, LookupError, HANGUL, parseKoWiktionary, lemmaCandidates };
 })(self);

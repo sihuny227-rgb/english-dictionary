@@ -735,10 +735,18 @@
       db.settings.source = e.target.value;
       $('#aiBox').hidden = db.settings.source !== 'ai';
       save();
+      renderRefreshBox();
       if (db.settings.source === 'ai' && !db.settings.aiKey) $('#aiKey').focus();
     }));
-    $('#aiKey').addEventListener('change', e => { db.settings.aiKey = e.target.value.trim(); save(); toast(db.settings.aiKey ? 'API 키를 저장했어요' : 'API 키를 지웠어요'); });
-    $('#aiModel').addEventListener('change', e => { db.settings.aiModel = e.target.value; save(); });
+    $('#aiKey').addEventListener('change', e => {
+      db.settings.aiKey = e.target.value.trim();
+      save();
+      $('#aiStatus').innerHTML = '';
+      renderRefreshBox();
+      toast(db.settings.aiKey ? 'API 키를 저장했어요. ‘키 확인’을 눌러 보세요.' : 'API 키를 지웠어요');
+    });
+    $('#aiModel').addEventListener('change', e => { db.settings.aiModel = e.target.value; save(); $('#aiStatus').innerHTML = ''; });
+    $('#aiTest').addEventListener('click', e => testAIKey(e.currentTarget));
 
     $('#voice').addEventListener('change', e => { db.settings.voice = e.target.value; save(); Speech.say('Hello! This is how I sound.'); });
     $('#rate').addEventListener('input', e => { $('#rateVal').textContent = Number(e.target.value).toFixed(1) + '배'; });
@@ -763,9 +771,10 @@
   let refreshing = false;
 
   function renderRefreshBox() {
+    renderAIRefreshBox();
     const box = $('#refreshBox');
     if (!box || refreshing) return;
-    const n = oldMeaningWords().length;
+    const n = db.settings.source === 'ai' ? 0 : oldMeaningWords().length;
     box.innerHTML = n
       ? '<p class="notice warn" style="margin-top:12px">예전에 기계 번역으로 뜻을 붙인 단어가 ' + n + '개 있어요. 사전(위키낱말사전) 뜻으로 바꿀 수 있어요. 예문과 퀴즈 기록은 그대로예요.</p>' +
         '<button class="btn ghost sm" data-act="refresh-meanings">예전 뜻 ' + n + '개 사전으로 다시 찾기</button>'
@@ -793,6 +802,79 @@
     refreshAll();
     renderRefreshBox();
     toast(list.length + '개 중 ' + changed + '개의 뜻을 사전 뜻으로 바꿨어요' + (changed < list.length ? ' (사전에 없는 단어는 그대로 뒀어요)' : ''));
+  }
+
+  /* ---------- AI 사전: 키 확인 · 단어장 한꺼번에 다시 찾기 ---------- */
+
+  const MODEL_NAMES = { 'claude-opus-5-5': 'Claude Opus 5.5', 'claude-haiku-5-5': 'Claude Haiku 5.5' };
+  const notAIWords = () => db.words.filter(w => w.source !== 'ai');
+  let aiRefreshing = false;
+
+  async function testAIKey(btn) {
+    const s = db.settings;
+    const box = $('#aiStatus');
+    if (!s.aiKey) { toast('API 키를 먼저 넣으세요.'); $('#aiKey').focus(); return; }
+    btn.disabled = true;
+    box.innerHTML = '<p class="notice"><span class="loading"><span class="spin"></span>' + esc(MODEL_NAMES[s.aiModel] || s.aiModel) + '에게 물어보는 중…</span></p>';
+    try {
+      const e = await Dict.aiLookup('reluctant', s.aiKey, s.aiModel);
+      const ex = e.examples[0];
+      box.innerHTML = '<p class="notice" style="background:var(--ok-soft)"><b>잘 돼요!</b> reluctant → ' + esc(Core.meaningText(e, 2)) +
+        (ex ? '<br><span lang="en">' + esc(ex.en) + '</span><br><span class="muted">' + esc(ex.ko) + '</span>' : '') + '</p>';
+    } catch (err) {
+      box.innerHTML = '<p class="notice warn"><b>안 돼요:</b> ' + esc(Dict.aiErrorText(err)) + '</p>';
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  function renderAIRefreshBox() {
+    const box = $('#aiRefreshBox');
+    if (!box || aiRefreshing) return;
+    const n = db.settings.source === 'ai' && db.settings.aiKey ? notAIWords().length : 0;
+    box.innerHTML = n
+      ? '<p class="muted" style="margin:12px 0 6px">단어장에 무료 사전으로 찾은 단어가 ' + n + '개 있어요. AI 뜻·예문으로 바꿀 수 있어요. 퀴즈 기록은 그대로예요.</p>' +
+        '<button class="btn ghost sm" data-act="ai-refresh">단어 ' + n + '개를 AI로 다시 찾기</button>'
+      : '';
+  }
+
+  async function aiRefreshAll(btn) {
+    if (aiRefreshing) return;
+    const s = db.settings;
+    const list = notAIWords();
+    if (!list.length || !s.aiKey) return;
+    // 단어 하나에 Opus 5.5 약 1.5센트, Haiku 5.5 약 0.05센트로 어림해요
+    const cents = list.length * (s.aiModel === 'claude-haiku-5-5' ? 0.05 : 1.5);
+    const cost = cents < 1 ? '1센트 미만' : cents < 100 ? Math.ceil(cents) + '센트 안팎' : (cents / 100).toFixed(1) + '달러 안팎';
+    if (!confirm('단어 ' + list.length + '개의 뜻과 예문을 ' + (MODEL_NAMES[s.aiModel] || s.aiModel) + '로 다시 찾을까요?\n' +
+      '예상 요금: ' + cost + ' (내 Anthropic 계정에서 나가요)\n직접 고친 뜻도 AI 뜻으로 바뀌어요. 퀴즈 기록은 그대로예요.')) return;
+    aiRefreshing = true;
+    btn.disabled = true;
+    let done = 0, changed = 0, stop = '';
+    for (const w of list) {
+      btn.textContent = 'AI로 찾는 중… ' + (done + 1) + ' / ' + list.length;
+      try {
+        const e = await Dict.aiLookup(w.word, s.aiKey, s.aiModel);
+        const cur = byId(w.id);
+        if (cur) {
+          if (e.phonetic) cur.phonetic = e.phonetic;
+          if (e.meanings.length) { cur.meanings = e.meanings; cur.defs = e.defs; cur.credit = e.credit; }
+          if (e.examples.length) cur.examples = e.examples;
+          cur.source = 'ai';
+          changed++;
+          save();
+        }
+      } catch (err) {
+        // 키·잔액 문제는 다음 단어도 똑같이 실패하니 멈춰요
+        if (err.status === 401 || err.status === 403 || (err.status === 400 && /credit|balance/i.test(err.message || ''))) { stop = Dict.aiErrorText(err); break; }
+      }
+      done++;
+      await new Promise(res => setTimeout(res, 300));
+    }
+    aiRefreshing = false;
+    refreshAll();
+    renderRefreshBox();
+    toast(stop ? changed + '개를 바꾸고 멈췄어요: ' + stop : list.length + '개 중 ' + changed + '개를 AI 뜻·예문으로 바꿨어요');
   }
 
   /* ---------- 백업 ---------- */
@@ -951,6 +1033,7 @@
         break;
       case 'quiz-home': state.quiz = null; renderQuiz(); break;
       case 'refresh-meanings': refreshOldMeanings(el); break;
+      case 'ai-refresh': aiRefreshAll(el); break;
       case 'popup-next': { const w = Popup.pick(); if (w) popupCard(w); break; }
       case 'quiz-from-popup': closeSheet(); startQuiz(false); break;
     }

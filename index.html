@@ -72,6 +72,11 @@ input[type=range]{padding:0;accent-color:var(--accent);background:none;border:0}
 .notice{border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14px;background:var(--accent-soft)}
 .notice.warn{background:var(--warn-soft)}
 .check{display:flex;gap:10px;align-items:center;padding:6px 0}
+.howto{margin:8px 0 4px;background:var(--accent-soft);border-radius:10px;padding:10px 12px}
+.howto summary{color:var(--accent);font-weight:600;font-size:14px}
+.howto ol{margin:8px 0 6px;padding-left:20px;font-size:14px}
+.howto li{margin:4px 0}
+.howto a{color:var(--accent)}
 
 /* 찾기 */
 .search{display:flex;gap:8px;margin-bottom:14px}
@@ -238,6 +243,37 @@ dialog[open]{animation:up .22s ease-out}
     <!-- 설정 -->
     <section id="tab-settings" hidden>
       <div class="card">
+        <h2>뜻·예문 찾는 방법</h2>
+        <label class="check"><input type="radio" name="src" value="ai"> AI 사전 (Claude · 내 API 키 필요) — 뜻·예문이 가장 좋아요</label>
+        <label class="check"><input type="radio" name="src" value="free"> 무료 사전 (가입·키 필요 없음)</label>
+        <div id="aiBox" hidden>
+          <details class="howto">
+            <summary>API 키 만드는 법</summary>
+            <ol>
+              <li><a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a>에 가입하고 로그인해요.</li>
+              <li>Settings → <b>Billing</b>에서 크레딧을 충전해요 (5달러면 Opus로 단어 수백 개, Haiku로는 수천 개).</li>
+              <li>Settings → <b>API keys</b>에서 <b>Create key</b>를 눌러 키를 만들어요. 키는 만들 때 한 번만 보여요.</li>
+              <li>키(sk-ant-로 시작)를 복사해서 아래 칸에 붙여 넣고 <b>키 확인</b>을 눌러요.</li>
+            </ol>
+            <p class="muted">Settings → Limits에서 한 달 사용 한도를 정해 두면 안심이에요. 키는 다른 사람에게 보여 주지 마세요.</p>
+          </details>
+          <span class="lbl">Claude API 키</span>
+          <input id="aiKey" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
+          <span class="lbl">모델</span>
+          <select id="aiModel">
+            <option value="claude-opus-5-5">Claude Opus 5.5 — 가장 정확 (단어 하나에 1~2센트쯤)</option>
+            <option value="claude-haiku-5-5">Claude Haiku 5.5 — 아주 저렴 (단어 100개에 약 5센트)</option>
+          </select>
+          <p class="muted">키는 이 휴대폰 안에만 저장되고 Anthropic(api.anthropic.com)으로만 보내요. 백업 파일에도 들어가지 않아요. AI로 못 찾으면 무료 사전으로 찾아요.</p>
+          <div class="btns"><button class="btn ghost sm" id="aiTest">키 확인 (reluctant 찾아보기)</button></div>
+          <div id="aiStatus"></div>
+          <div id="aiRefreshBox"></div>
+        </div>
+        <p class="muted">무료 사전의 한국어 뜻은 위키낱말사전(ko.wiktionary.org, CC BY-SA)에서 가져와요. 발음 기호·영영 풀이는 dictionaryapi.dev, 예문은 Tatoeba를 쓰고, 사전에 없는 단어의 뜻과 예문 해석만 기계 번역(MyMemory)으로 채워요. 기계 번역은 하루 사용량에 한도가 있어요.</p>
+        <div id="refreshBox"></div>
+      </div>
+
+      <div class="card">
         <h2>단어 알림</h2>
         <p class="notice" id="notifyNote">정해진 시간마다 단어장에서 단어 하나를 골라 예문 3개와 함께 보여 줘요. <b>이 앱을 열어 둔 동안에만</b> 알림이 와요.</p>
         <label class="check"><input type="checkbox" id="nOn"> 단어 알림 켜기</label>
@@ -258,24 +294,6 @@ dialog[open]{animation:up .22s ease-out}
           <button class="btn ghost sm" id="nTestCard">단어 카드 띄워 보기</button>
           <button class="btn ghost sm" id="nTestPush">휴대폰 알림 보내 보기</button>
         </div>
-      </div>
-
-      <div class="card">
-        <h2>뜻·예문 찾는 방법</h2>
-        <label class="check"><input type="radio" name="src" value="free"> 무료 사전 (가입·키 필요 없음)</label>
-        <label class="check"><input type="radio" name="src" value="ai"> AI 사전 (Claude · 내 API 키 필요)</label>
-        <div id="aiBox" hidden>
-          <span class="lbl">Claude API 키</span>
-          <input id="aiKey" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
-          <span class="lbl">모델</span>
-          <select id="aiModel">
-            <option value="claude-opus-5-5">Claude Opus 5.5 — 가장 정확 (단어 하나에 1~2센트쯤)</option>
-            <option value="claude-haiku-5-5">Claude Haiku 5.5 — 아주 저렴 (단어 100개에 약 5센트)</option>
-          </select>
-          <p class="muted">키는 이 휴대폰 안에만 저장되고 Anthropic(api.anthropic.com)으로만 보내요. 백업 파일에도 들어가지 않아요. AI로 못 찾으면 무료 사전으로 찾아요.</p>
-        </div>
-        <p class="muted">무료 사전의 한국어 뜻은 위키낱말사전(ko.wiktionary.org, CC BY-SA)에서 가져와요. 발음 기호·영영 풀이는 dictionaryapi.dev, 예문은 Tatoeba를 쓰고, 사전에 없는 단어의 뜻과 예문 해석만 기계 번역(MyMemory)으로 채워요. 기계 번역은 하루 사용량에 한도가 있어요.</p>
-        <div id="refreshBox"></div>
       </div>
 
       <div class="card">
