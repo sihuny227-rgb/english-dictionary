@@ -1,6 +1,6 @@
 // 앱 파일을 고쳐서 다시 올릴 때마다 이 숫자를 올려 주세요 (v1 → v2).
 // 그래야 설치된 앱이 새 버전을 받아 "새 버전이 준비됐어요" 안내를 띄웁니다.
-const VERSION = 'my-english-dictionary-v1';
+const VERSION = 'my-english-dictionary-v2';
 const FONT_CACHE = 'my-english-dictionary-fonts';
 const SHELL = [
   './',

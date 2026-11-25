@@ -17,6 +17,7 @@
   }
 
   async function getJSON(url, opts, ms) {
+    opts = opts || {};
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), ms || 12000);
     try {
@@ -71,8 +72,12 @@
       out.push(t);
     };
     add(j.responseData && j.responseData.translatedText);
-    for (const m of (j.matches || [])) if (Number(m.match) >= 0.8) add(m.translation);
-    return out.slice(0, 4);
+    // 번역 메모리는 엉뚱한 문장이 섞여 있어서, 이 단어와 똑같은 원문에 높은 점수인 것만 써요
+    const w = word.trim().toLowerCase();
+    for (const m of (j.matches || [])) {
+      if (Number(m.match) >= 0.9 && String(m.segment || '').trim().toLowerCase() === w) add(m.translation);
+    }
+    return out.slice(0, 3);
   }
 
   async function translateSentence(en) {
@@ -93,6 +98,120 @@
       const ko = trans.find(x => x && x.lang === 'kor');
       return { en: tidySentence(s.text), ko: ko ? ko.text.trim() : '' };
     });
+  }
+
+  /* ---------- 위키낱말사전 (ko.wiktionary.org · CC BY-SA) ----------
+     사람이 쓴 한국어 뜻풀이가 품사별로 있어요. 공식 API라 휴대폰 브라우저에서 바로 불러올 수 있어요. */
+
+  const WIKI_API = 'https://ko.wiktionary.org/w/api.php?format=json&formatversion=2&origin=*';
+  // 위키미디어 권장대로 앱 이름을 밝혀요 (개인 정보는 넣지 않아요)
+  const WIKI_HEADERS = { headers: { 'Api-User-Agent': 'my-english-dictionary/1.0 (personal study app)' } };
+  const WIKI_POS = {
+    '명사': '명사', '고유명사': '명사', '동사': '동사', '타동사': '동사', '자동사': '동사', '형용사': '형용사',
+    '부사': '부사', '전치사': '전치사', '접속사': '접속사', '대명사': '대명사', '감탄사': '감탄사', '한정사': '한정사',
+    '관사': '관사', '조동사': '조동사', '수사': '수사', '동사구': '구동사', '구동사': '구동사', '관용구': '숙어',
+    '숙어': '숙어', '구': '구', '약어': '약어', '접두사': '접두사', '접미사': '접미사',
+    '동명사': '동명사', '분사': '분사', '현재분사': '분사', '과거분사': '분사', '감동사': '감탄사',
+  };
+  const INFLECTION = /\[\[([A-Za-z][A-Za-z' -]*)\]\]\s*의\s*(?:과거|현재분사|복수|3인칭|비교급|최상급)/;
+  const ONLY_INFLECTION = /^'?[A-Za-z][A-Za-z' -]*'?\s*의\s*(?:복수|과거|현재분사|과거분사|3인칭|비교급|최상급|동명사)[^,]*$/;
+
+  function cleanWikiLine(s) {
+    let t = String(s || '');
+    for (let k = 0; k < 3; k++) t = t.replace(/\{\{[^{}]*\}\}/g, '');
+    return t
+      .replace(/<ref[^>]*\/>/g, '').replace(/<ref[\s\S]*?<\/ref>/g, '').replace(/<[^>]+>/g, '')
+      .replace(/\[\[(?:[^|\]]*\|)?([^\]]*)\]\]/g, '$1')
+      .replace(/\[https?:[^\s\]]+\s*([^\]]*)\]/g, '$1')
+      .replace(/'{2,}/g, '')
+      .replace(/〔[^〕]*〕/g, '')
+      .replace(/[㉠-㉿]/g, '')
+      .replace(/\s*\((?=[^)]*[A-Za-z])[^()가-힣]*\)/g, '')       // (To move from ...) 같은 영어 설명은 빼요
+      .replace(/^\s*\((?:자|타|자동사|타동사)[^)]*\)\s*/, '')     // 품사는 따로 보여 주니 (자)(타동사)는 빼요
+      .replace(/^\s*~\s*/, '')
+      .replace(/\s+/g, ' ').trim()
+      .replace(/[.;。,\s]+$/, '');
+  }
+
+  function englishSection(text) {
+    const lines = String(text || '').split('\n');
+    const start = lines.findIndex(l => /^==\s*영어\s*==\s*$/.test(l));
+    if (start < 0) return null;
+    const out = [];
+    for (let i = start + 1; i < lines.length; i++) {
+      if (/^==[^=].*[^=]==\s*$/.test(lines[i])) break;
+      out.push(lines[i]);
+    }
+    return out;
+  }
+
+  function parseKoWiktionary(text) {
+    const lines = englishSection(text);
+    if (!lines) return null;
+    const groups = [];
+    const group = pos => groups.find(g => g.pos === pos) || (groups.push({ pos, defs: [] }), groups[groups.length - 1]);
+    let cur = group('');
+    for (const line of lines) {
+      const h = /^(=+)\s*([^=]+?)\s*\1\s*$/.exec(line);
+      if (h) { const p = WIKI_POS[h[2].trim()]; cur = p ? group(p) : null; continue; }
+      const d = /^#(?![#:*])\s*(.*)$/.exec(line);
+      if (!d || !cur) continue;
+      const c = cleanWikiLine(d[1]);
+      if (c && /[가-힣]/.test(c) && c.length <= 80 && !ONLY_INFLECTION.test(c) && !cur.defs.includes(c)) cur.defs.push(c);
+    }
+    const meanings = [];
+    for (const g of groups) for (const d of g.defs.slice(0, 3)) if (meanings.length < 5) meanings.push({ pos: g.pos, ko: d });
+    const m = INFLECTION.exec(lines.join('\n'));
+    return { meanings, lemma: m ? m[1].trim() : '' };
+  }
+
+  // 요청이 너무 잦다고(429) 하면 잠깐 쉬었다가 한 번만 다시 해요
+  async function wikiJSON(params) {
+    try {
+      return await getJSON(WIKI_API + params, WIKI_HEADERS);
+    } catch (e) {
+      if (e.status !== 429) throw e;
+      await new Promise(r => setTimeout(r, 1500));
+      return getJSON(WIKI_API + params, WIKI_HEADERS);
+    }
+  }
+
+  async function koWiktionary(word) {
+    const j = await wikiJSON('&action=parse&prop=wikitext&redirects=1&page=' + encodeURIComponent(word));
+    if (!j || !j.parse) return null;
+    const r = parseKoWiktionary(j.parse.wikitext);
+    if (r) r.title = j.parse.title;
+    return r;
+  }
+
+  // 사전에 없는 변화형이면 흔한 규칙으로 원형 후보를 만들어, 위키낱말사전에 있는 첫 번째를 골라요
+  function lemmaCandidates(w) {
+    const c = [];
+    const add = x => { if (x && x.length > 1 && x !== w && !c.includes(x)) c.push(x); };
+    if (/ies$|ied$/.test(w)) add(w.slice(0, -3) + 'y');
+    if (/(.)\1(ed|ing)$/.test(w)) add(w.replace(/(.)\1(ed|ing)$/, '$1'));
+    if (/ing$/.test(w)) { add(w.slice(0, -3) + 'e'); add(w.slice(0, -3)); }
+    if (/ed$/.test(w)) { add(w.slice(0, -1)); add(w.slice(0, -2)); }
+    if (/ier$|iest$/.test(w)) add(w.replace(/ier$|iest$/, 'y'));
+    if (/est$/.test(w)) { add(w.slice(0, -2)); add(w.slice(0, -3)); }
+    if (/er$/.test(w)) { add(w.slice(0, -1)); add(w.slice(0, -2)); }
+    if (/ves$/.test(w)) { add(w.slice(0, -3) + 'f'); add(w.slice(0, -3) + 'fe'); }
+    if (/es$/.test(w)) add(w.slice(0, -2));
+    if (/s$/.test(w) && !/ss$/.test(w)) add(w.slice(0, -1));
+    return c;
+  }
+
+  async function findLemma(word) {
+    const cands = lemmaCandidates(word.toLowerCase());
+    if (!cands.length) return '';
+    const j = await wikiJSON('&action=query&titles=' + encodeURIComponent(cands.join('|')));
+    const have = new Set(((j && j.query && j.query.pages) || []).filter(p => !p.missing).map(p => p.title));
+    for (const c of cands) {
+      if (!have.has(c)) continue;
+      const r = await koWiktionary(c);
+      if (r && r.meanings.length) return c;
+    }
+    return '';
   }
 
   /* ---------- 무료 사전 ---------- */
@@ -153,23 +272,52 @@
       word = await englishFor(input);
       note = '‘' + input + '’ → ' + word;
     }
-    // 네 곳에 한꺼번에 물어봐요 (해석 없는 Tatoeba 예문은 모자랄 때만 써요)
-    const [dictR, memR, tatKoR, tatEnR] = await Promise.allSettled([
+    return lookupEnglish(word, note, input, 0);
+  }
+
+  async function lookupEnglish(word, note, input, depth) {
+    // 다섯 곳에 한꺼번에 물어봐요 (해석 없는 Tatoeba 예문은 모자랄 때만 써요)
+    const [wikR, dictR, memR, tatKoR, tatEnR] = await Promise.allSettled([
+      koWiktionary(word),
       getJSON('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word)),
       translate(word, 'en|ko'),
       tatoeba(word, true),
       tatoeba(word, false),
     ]);
+    const wik = wikR.status === 'fulfilled' ? wikR.value : null;
+
+    // apples·went처럼 변화형을 쳤으면 원형(apple·go)으로 다시 찾아요
+    if (depth === 0 && !(wik && wik.meanings.length)) {
+      let lemma = wik && wik.lemma;
+      if (!lemma && !/\s/.test(word)) { try { lemma = await findLemma(word); } catch (e) { lemma = ''; } }
+      if (lemma && lemma.toLowerCase() !== word.toLowerCase()) {
+        return lookupEnglish(lemma.toLowerCase(), '‘' + input + '’ → ' + lemma.toLowerCase(), input, 1);
+      }
+    }
+
     const dict = parseDictionary(dictR.status === 'fulfilled' ? dictR.value : null, word);
-    const ko = memR.status === 'fulfilled' ? koMeanings(memR.value, word) : [];
     const tatKo = tatKoR.status === 'fulfilled' ? tatKoR.value : [];
     const tatEn = tatEnR.status === 'fulfilled' ? tatEnR.value : [];
+
+    // 한국어 뜻: 위키낱말사전이 있으면 그걸 쓰고, 없을 때만 기계 번역(MyMemory)을 써요
+    let meanings = [];
+    let credit = null;
+    if (wik && wik.meanings.length) {
+      meanings = wik.meanings;
+      credit = { name: '위키낱말사전', url: 'https://ko.wiktionary.org/wiki/' + encodeURIComponent(wik.title || word) };
+    } else {
+      const ko = memR.status === 'fulfilled' ? koMeanings(memR.value, word) : [];
+      if (ko.length) {
+        meanings = [{ pos: '', ko: ko.join(', ') }];
+        credit = { name: '기계 번역(MyMemory)', url: '' };
+      }
+    }
 
     let examples = chooseExamples(word, [tatKo.slice(0, 2), dict.examples, tatKo.slice(2)], 3);
     if (examples.length < 3) examples = chooseExamples(word, [examples, tatEn], 3);
 
-    if (!dict.defs.length && !ko.length && !examples.length) {
-      const offline = [dictR, memR, tatKoR].every(r => r.status === 'rejected' && r.reason && r.reason.code !== 'http');
+    if (!dict.defs.length && !meanings.length && !examples.length) {
+      const offline = [wikR, dictR, memR, tatKoR].every(r => r.status === 'rejected' && r.reason && r.reason.code !== 'http');
       if (offline) throw new LookupError('사전 서버에 연결하지 못했어요', 'network');
       throw new LookupError('뜻을 찾지 못했어요', 'notfound');
     }
@@ -180,14 +328,14 @@
       try { ex.ko = await translateSentence(ex.en); } catch (e) { /* 번역 없이 저장 */ }
     }));
 
+    let warning = '';
+    if (!meanings.length) warning = '한국어 뜻을 찾지 못했어요. ‘수정’에서 직접 넣어 주세요.';
+    else if (!credit || !credit.url) warning = '사전에 없는 단어라 기계 번역으로 뜻을 붙였어요. 어색하면 ‘수정’에서 고쳐 주세요.';
+
     return {
-      entry: {
-        word, phonetic: dict.phonetic, audio: dict.audio,
-        meanings: ko.length ? [{ pos: '', ko: ko.join(', ') }] : [],
-        defs: dict.defs, examples, source: 'free',
-      },
+      entry: { word, phonetic: dict.phonetic, audio: dict.audio, meanings, defs: dict.defs, examples, source: 'free', credit },
       note,
-      warning: ko.length ? '' : '한국어 뜻을 찾지 못했어요. ‘수정’에서 직접 넣어 주세요.',
+      warning,
     };
   }
 
@@ -272,6 +420,7 @@
       defs: [],
       examples: (j.examples || []).filter(x => x && x.en).slice(0, 3).map(x => ({ en: x.en.trim(), ko: (x.ko || '').trim() })),
       source: 'ai',
+      credit: { name: 'AI (Claude)', url: '' },
     };
   }
 
@@ -298,5 +447,12 @@
     return freeLookup(input);
   }
 
-  root.Dict = { lookup, LookupError, HANGUL };
+  // 이미 저장한 단어의 뜻만 위키낱말사전으로 새로 받을 때
+  async function dictionaryMeanings(word) {
+    const r = await koWiktionary(word);
+    if (!r || !r.meanings.length) return null;
+    return { meanings: r.meanings, credit: { name: '위키낱말사전', url: 'https://ko.wiktionary.org/wiki/' + encodeURIComponent(r.title || word) } };
+  }
+
+  root.Dict = { lookup, dictionaryMeanings, LookupError, HANGUL, parseKoWiktionary, lemmaCandidates };
 })(self);

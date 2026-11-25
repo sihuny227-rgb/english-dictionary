@@ -37,6 +37,7 @@
       defs: (Array.isArray(w.defs) ? w.defs : []).filter(d => d && d.en).map(d => ({ pos: String(d.pos || ''), en: String(d.en) })),
       examples: (Array.isArray(w.examples) ? w.examples : []).filter(x => x && x.en).map(x => ({ en: String(x.en), ko: String(x.ko || '') })),
       source: w.source || 'manual',
+      credit: w.credit && w.credit.name ? { name: String(w.credit.name), url: /^https:\/\//.test(w.credit.url || '') ? String(w.credit.url) : '' } : null,
       addedAt: added,
       srs: Object.assign(Core.newSrs(added), w.srs || {}),
     };
@@ -171,8 +172,11 @@
 
   function wordCard(w, opts) {
     opts = opts || {};
+    const credit = w.credit && w.meanings.length
+      ? '<div class="credit">뜻 출처: ' + (w.credit.url ? '<a href="' + esc(w.credit.url) + '" target="_blank" rel="noopener">' + esc(w.credit.name) + '</a>' : esc(w.credit.name)) + '</div>'
+      : '';
     const means = w.meanings.length
-      ? '<ul class="means">' + w.meanings.map(m => '<li>' + (m.pos ? '<span class="pos">' + esc(m.pos) + '</span>' : '') + esc(m.ko) + '</li>').join('') + '</ul>'
+      ? '<ul class="means">' + w.meanings.map(m => '<li>' + (m.pos ? '<span class="pos">' + esc(m.pos) + '</span>' : '') + esc(m.ko) + '</li>').join('') + '</ul>' + credit
       : '<p class="muted" style="margin:10px 0 0">한국어 뜻이 아직 없어요. ‘수정’에서 넣을 수 있어요.</p>';
     const exs = w.examples.length
       ? '<div class="sec">예문</div><ol class="ex">' + w.examples.map((x, i) =>
@@ -265,6 +269,7 @@
       if (e.meanings.length) w.meanings = e.meanings;
       if (e.defs.length) w.defs = e.defs;
       if (e.examples.length) w.examples = e.examples;
+      if (e.meanings.length) w.credit = e.credit || null;
       w.source = e.source;
       save();
       refreshAll();
@@ -319,6 +324,8 @@
       if (!w) return;
       const dup = findSaved(word);
       if (dup && dup.id !== id) { toast('‘' + word + '’은(는) 이미 단어장에 있어요.'); return; }
+      // 뜻을 직접 고쳤으면 출처를 '직접 입력'으로 바꿔요 (한꺼번에 다시 찾기에서도 건드리지 않아요)
+      if (JSON.stringify(data.meanings) !== JSON.stringify(w.meanings)) w.credit = { name: '직접 입력', url: '' };
       Object.assign(w, data);
       save();
       refreshAll();
@@ -693,6 +700,7 @@
     $('#quizSize').value = String(s.quizSize);
     renderVoiceOptions();
     renderNotifyStatus();
+    renderRefreshBox();
   }
 
   function bindSettings() {
@@ -746,6 +754,45 @@
       e.target.value = '';
       if (f) await backupLoad(f);
     });
+  }
+
+  /* ---------- 예전 방식(기계 번역)으로 찾은 뜻을 사전 뜻으로 바꾸기 ---------- */
+
+  // 출처 표시가 없는 무료 사전 단어 = 위키낱말사전을 쓰기 전에 기계 번역으로 뜻을 붙인 단어
+  const oldMeaningWords = () => db.words.filter(w => w.source === 'free' && !w.credit);
+  let refreshing = false;
+
+  function renderRefreshBox() {
+    const box = $('#refreshBox');
+    if (!box || refreshing) return;
+    const n = oldMeaningWords().length;
+    box.innerHTML = n
+      ? '<p class="notice warn" style="margin-top:12px">예전에 기계 번역으로 뜻을 붙인 단어가 ' + n + '개 있어요. 사전(위키낱말사전) 뜻으로 바꿀 수 있어요. 예문과 퀴즈 기록은 그대로예요.</p>' +
+        '<button class="btn ghost sm" data-act="refresh-meanings">예전 뜻 ' + n + '개 사전으로 다시 찾기</button>'
+      : '';
+  }
+
+  async function refreshOldMeanings(btn) {
+    if (refreshing) return;
+    const list = oldMeaningWords();
+    if (!list.length) return;
+    refreshing = true;
+    btn.disabled = true;
+    let done = 0, changed = 0;
+    for (const w of list) {
+      btn.textContent = '다시 찾는 중… ' + (done + 1) + ' / ' + list.length;
+      try {
+        const r = await Dict.dictionaryMeanings(w.word);
+        const cur = byId(w.id);
+        if (r && cur) { cur.meanings = r.meanings; cur.credit = r.credit; changed++; save(); }
+      } catch (e) { /* 이 단어는 건너뛰어요 */ }
+      done++;
+      await new Promise(res => setTimeout(res, 800)); // 사전 서버에 부담 주지 않게 천천히
+    }
+    refreshing = false;
+    refreshAll();
+    renderRefreshBox();
+    toast(list.length + '개 중 ' + changed + '개의 뜻을 사전 뜻으로 바꿨어요' + (changed < list.length ? ' (사전에 없는 단어는 그대로 뒀어요)' : ''));
   }
 
   /* ---------- 백업 ---------- */
@@ -826,7 +873,7 @@
     if (state.tab === 'dict') renderDict();
     else if (state.tab === 'list') renderList();
     else if (state.tab === 'quiz') renderQuiz();
-    else if (state.tab === 'settings') renderNotifyStatus();
+    else if (state.tab === 'settings') { renderNotifyStatus(); renderRefreshBox(); }
   }
 
   function refreshAll() {
@@ -903,6 +950,7 @@
         renderQuiz();
         break;
       case 'quiz-home': state.quiz = null; renderQuiz(); break;
+      case 'refresh-meanings': refreshOldMeanings(el); break;
       case 'popup-next': { const w = Popup.pick(); if (w) popupCard(w); break; }
       case 'quiz-from-popup': closeSheet(); startQuiz(false); break;
     }

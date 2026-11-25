@@ -90,6 +90,8 @@ input[type=range]{padding:0;accent-color:var(--accent);background:none;border:0}
 .say.playing{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
 .means{list-style:none;margin:12px 0 0;padding:0}
 .means li{padding:2px 0;font-size:16px}
+.credit{font-size:12px;color:var(--muted);margin-top:4px}
+.credit a{color:inherit}
 .pos{display:inline-block;font-size:12px;background:var(--accent-soft);color:var(--accent);border-radius:6px;padding:1px 7px;margin-right:6px;vertical-align:2px}
 .sec{font-size:13px;color:var(--muted);margin:16px 0 4px;font-weight:600}
 ol.ex{list-style:none;margin:0;padding:0}
@@ -272,7 +274,8 @@ dialog[open]{animation:up .22s ease-out}
           </select>
           <p class="muted">키는 이 휴대폰 안에만 저장되고 Anthropic(api.anthropic.com)으로만 보내요. 백업 파일에도 들어가지 않아요. AI로 못 찾으면 무료 사전으로 찾아요.</p>
         </div>
-        <p class="muted">무료 사전은 영어 사전(dictionaryapi.dev), 예문(Tatoeba), 번역(MyMemory)을 함께 써요. 무료 번역은 하루 사용량에 한도가 있어요.</p>
+        <p class="muted">무료 사전의 한국어 뜻은 위키낱말사전(ko.wiktionary.org, CC BY-SA)에서 가져와요. 발음 기호·영영 풀이는 dictionaryapi.dev, 예문은 Tatoeba를 쓰고, 사전에 없는 단어의 뜻과 예문 해석만 기계 번역(MyMemory)으로 채워요. 기계 번역은 하루 사용량에 한도가 있어요.</p>
+        <div id="refreshBox"></div>
       </div>
 
       <div class="card">
