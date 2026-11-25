@@ -22,6 +22,7 @@
     s = s || {};
     const out = Object.assign({}, DEFAULTS, s);
     out.notify = Object.assign({}, DEFAULTS.notify, s.notify || {});
+    if (out.source === 'ai' && !out.aiKey) out.source = 'free';   // 키 없이 AI를 고른 상태면 무료 사전으로
     return out;
   }
 
@@ -38,6 +39,7 @@
       examples: (Array.isArray(w.examples) ? w.examples : []).filter(x => x && x.en).map(x => ({ en: String(x.en), ko: String(x.ko || '') })),
       source: w.source || 'manual',
       credit: w.credit && w.credit.name ? { name: String(w.credit.name), url: /^https:\/\//.test(w.credit.url || '') ? String(w.credit.url) : '' } : null,
+      rev: Number(w.rev) || 0,
       addedAt: added,
       srs: Object.assign(Core.newSrs(added), w.srs || {}),
     };
@@ -271,6 +273,7 @@
       if (e.examples.length) w.examples = e.examples;
       if (e.meanings.length) w.credit = e.credit || null;
       w.source = e.source;
+      w.rev = e.rev || 0;
       save();
       refreshAll();
       if (where === 'sheet') openDetail(id); else showSaved(w, [r.warning]);
@@ -764,44 +767,56 @@
     });
   }
 
-  /* ---------- 예전 방식(기계 번역)으로 찾은 뜻을 사전 뜻으로 바꾸기 ---------- */
+  /* ---------- 예전 버전으로 찾은 단어의 뜻·예문을 새 무료 사전으로 다시 받기 ---------- */
 
-  // 출처 표시가 없는 무료 사전 단어 = 위키낱말사전을 쓰기 전에 기계 번역으로 뜻을 붙인 단어
-  const oldMeaningWords = () => db.words.filter(w => w.source === 'free' && !w.credit);
+  // 무료 사전으로 찾았지만 지금 버전(Dict.FREE_REV)보다 예전에 찾은 단어. 뜻을 직접 고친 단어는 건드리지 않아요.
+  const staleWords = () => db.words.filter(w => w.source === 'free' && w.rev < Dict.FREE_REV && !(w.credit && w.credit.name === '직접 입력'));
   let refreshing = false;
 
   function renderRefreshBox() {
     renderAIRefreshBox();
     const box = $('#refreshBox');
     if (!box || refreshing) return;
-    const n = db.settings.source === 'ai' ? 0 : oldMeaningWords().length;
+    const n = db.settings.source === 'ai' && db.settings.aiKey ? 0 : staleWords().length;
+    const mins = Math.max(1, Math.round(n * 8 / 60));
     box.innerHTML = n
-      ? '<p class="notice warn" style="margin-top:12px">예전에 기계 번역으로 뜻을 붙인 단어가 ' + n + '개 있어요. 사전(위키낱말사전) 뜻으로 바꿀 수 있어요. 예문과 퀴즈 기록은 그대로예요.</p>' +
-        '<button class="btn ghost sm" data-act="refresh-meanings">예전 뜻 ' + n + '개 사전으로 다시 찾기</button>'
+      ? '<p class="notice warn" style="margin-top:12px">예전 버전으로 찾은 단어가 ' + n + '개 있어요. 좋아진 무료 사전으로 뜻과 예문을 다시 받을 수 있어요. 퀴즈 기록과 직접 고친 뜻은 그대로예요. (' + mins + '분쯤 걸려요. 그동안 앱을 열어 두세요)</p>' +
+        '<button class="btn ghost sm" data-act="refresh-meanings">저장한 단어 ' + n + '개 뜻·예문 새로 받기</button>'
       : '';
   }
 
   async function refreshOldMeanings(btn) {
     if (refreshing) return;
-    const list = oldMeaningWords();
+    const list = staleWords();
     if (!list.length) return;
     refreshing = true;
     btn.disabled = true;
     let done = 0, changed = 0;
     for (const w of list) {
-      btn.textContent = '다시 찾는 중… ' + (done + 1) + ' / ' + list.length;
+      btn.textContent = '새로 받는 중… ' + (done + 1) + ' / ' + list.length;
       try {
-        const r = await Dict.dictionaryMeanings(w.word);
+        const r = await Dict.lookup(w.word, { source: 'free' });
+        const e = r.entry;
         const cur = byId(w.id);
-        if (r && cur) { cur.meanings = r.meanings; cur.credit = r.credit; changed++; save(); }
+        // apples → apple처럼 다른 단어로 바뀌면 예문이 안 맞으니 건너뛰어요
+        if (cur && Core.norm(e.word) === Core.norm(cur.word)) {
+          if (e.phonetic) cur.phonetic = e.phonetic;
+          if (e.audio) cur.audio = e.audio;
+          if (e.meanings.length) { cur.meanings = e.meanings; cur.credit = e.credit || null; }
+          if (e.defs.length) cur.defs = e.defs;
+          if (e.examples.length) cur.examples = e.examples;
+          cur.rev = e.rev || Dict.FREE_REV;
+          changed++;
+          save();
+        }
       } catch (e) { /* 이 단어는 건너뛰어요 */ }
       done++;
-      await new Promise(res => setTimeout(res, 800)); // 사전 서버에 부담 주지 않게 천천히
+      await new Promise(res => setTimeout(res, 1500)); // 사전 서버에 부담 주지 않게 천천히
     }
     refreshing = false;
     refreshAll();
     renderRefreshBox();
-    toast(list.length + '개 중 ' + changed + '개의 뜻을 사전 뜻으로 바꿨어요' + (changed < list.length ? ' (사전에 없는 단어는 그대로 뒀어요)' : ''));
+    toast(list.length + '개 중 ' + changed + '개의 뜻·예문을 새로 받았어요' + (changed < list.length ? ' (못 찾은 단어는 그대로 뒀어요)' : ''));
   }
 
   /* ---------- AI 사전: 키 확인 · 단어장 한꺼번에 다시 찾기 ---------- */

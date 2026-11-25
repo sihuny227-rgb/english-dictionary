@@ -6,6 +6,8 @@
   const Core = root.Core;
 
   const HANGUL = /[ㄱ-ㆎ가-힣]/;
+  // 무료 사전 찾는 방법이 바뀔 때마다 올려요. 이보다 낮은 단어는 설정에서 '새로 받기'를 권해요.
+  const FREE_REV = 3;
   const POS_KO = {
     noun: '명사', verb: '동사', adjective: '형용사', adverb: '부사', pronoun: '대명사',
     preposition: '전치사', conjunction: '접속사', interjection: '감탄사', determiner: '한정사',
@@ -88,15 +90,16 @@
 
   /* ---------- Tatoeba 예문 ---------- */
 
+  // 너무 짧거나 긴 문장은 처음부터 빼고 받아요 (word_count)
   async function tatoeba(word, withKorean) {
     const q = /\s/.test(word) ? '"' + word + '"' : word;
     let url = 'https://api.tatoeba.org/unstable/sentences?lang=eng&sort=relevance&q=' + encodeURIComponent(q);
-    url += withKorean ? '&trans:lang=kor&showtrans=matching&limit=10' : '&showtrans=none&limit=25';
+    url += withKorean ? '&trans:lang=kor&showtrans=matching&word_count=4-18&limit=20' : '&showtrans=none&word_count=6-15&limit=40';
     const j = await getJSON(url);
     return (j && j.data || []).filter(s => !s.is_unapproved).map(s => {
       const trans = [].concat(...(s.translations || []).map(x => Array.isArray(x) ? x : [x]));
       const ko = trans.find(x => x && x.lang === 'kor');
-      return { en: tidySentence(s.text), ko: ko ? ko.text.trim() : '' };
+      return { en: tidySentence(s.text), ko: ko ? ko.text.trim() : '', from: 'tatoeba' };
     });
   }
 
@@ -151,9 +154,23 @@
     const groups = [];
     const group = pos => groups.find(g => g.pos === pos) || (groups.push({ pos, defs: [] }), groups[groups.length - 1]);
     let cur = group('');
+    const examples = [];
     for (const line of lines) {
       const h = /^(=+)\s*([^=]+?)\s*\1\s*$/.exec(line);
       if (h) { const p = WIKI_POS[h[2].trim()]; cur = p ? group(p) : null; continue; }
+      // 예문 줄: "#: I hope you feel '''better'''. 빨리 쾌차하세요." 처럼 영어 뒤에 사람이 쓴 해석이 붙어 있어요
+      const x = /^(?:#:|:)\*?\s*(.+)$/.exec(line);
+      if (x && cur) {
+        const c = cleanWikiLine(x[1]);
+        const k = c.search(/[가-힣]/);
+        if (k > 0) {
+          const en = c.slice(0, k).replace(/[\s—–:/-]+$/, '').trim();
+          let ko = c.slice(k).trim();
+          if (/[가-힣]$/.test(ko)) ko += '.';
+          if (/^[A-Za-z"'“]/.test(en) && en.split(/\s+/).length >= 3 && !/[가-힣]/.test(en)) examples.push({ en: tidySentence(en), ko, from: 'wiki' });
+        }
+        continue;
+      }
       const d = /^#(?![#:*])\s*(.*)$/.exec(line);
       if (!d || !cur) continue;
       const c = cleanWikiLine(d[1]);
@@ -162,7 +179,43 @@
     const meanings = [];
     for (const g of groups) for (const d of g.defs.slice(0, 3)) if (meanings.length < 5) meanings.push({ pos: g.pos, ko: d });
     const m = INFLECTION.exec(lines.join('\n'));
-    return { meanings, lemma: m ? m[1].trim() : '' };
+    return { meanings, examples, lemma: m ? m[1].trim() : '' };
+  }
+
+  /* ---------- 영어 위키낱말사전의 한국어 번역 (en.wiktionary.org · CC BY-SA) ----------
+     한국어 위키낱말사전에 없는 단어일 때, 영어판의 뜻별 '번역' 표에서 한국어 낱말을 가져와요. */
+
+  const EN_POS = { Noun: '명사', Verb: '동사', Adjective: '형용사', Adverb: '부사', Preposition: '전치사', Conjunction: '접속사', Pronoun: '대명사', Interjection: '감탄사', Phrase: '구', Idiom: '숙어' };
+
+  function parseEnWiktionaryKo(text) {
+    const lines = String(text || '').split('\n');
+    const start = lines.findIndex(l => /^==\s*English\s*==\s*$/.test(l));
+    if (start < 0) return [];
+    let pos = '';
+    let sense = null;
+    const out = [];
+    for (let i = start + 1; i < lines.length; i++) {
+      const l = lines[i];
+      if (/^==[^=].*[^=]==\s*$/.test(l)) break;
+      const h = /^===+\s*([^=]+?)\s*===+\s*$/.exec(l);
+      if (h && EN_POS[h[1]]) { pos = EN_POS[h[1]]; continue; }
+      if (/^\{\{trans-top/.test(l)) { sense = []; continue; }
+      if (/^\{\{trans-bottom/.test(l)) { if (sense && sense.length) out.push({ pos, ko: sense.slice(0, 4).join(', ') }); sense = null; continue; }
+      if (sense && /^\*\s*Korean\s*:/.test(l)) {
+        for (const m of l.matchAll(/\{\{tt?\+?\|ko\|([^|}]+)/g)) {
+          const t = cleanWikiLine(m[1]);
+          if (t && /[가-힣]/.test(t) && !sense.includes(t)) sense.push(t);
+        }
+      }
+    }
+    const seen = new Set();
+    return out.filter(m => !seen.has(m.ko) && seen.add(m.ko)).slice(0, 3);
+  }
+
+  async function enWiktionaryKo(word) {
+    const url = 'https://en.wiktionary.org/w/api.php?format=json&formatversion=2&origin=*&action=parse&prop=wikitext&redirects=1&page=' + encodeURIComponent(word);
+    const j = await getJSON(url, WIKI_HEADERS);
+    return j && j.parse ? parseEnWiktionaryKo(j.parse.wikitext) : [];
   }
 
   // 요청이 너무 잦다고(429) 하면 잠깐 쉬었다가 한 번만 다시 해요
@@ -242,11 +295,45 @@
         for (const d of (m.definitions || [])) {
           perPos[pos] = (perPos[pos] || 0) + 1;
           if (perPos[pos] <= 2 && out.defs.length < 6 && d.definition) out.defs.push({ pos, en: d.definition });
-          if (d.example && Core.findWord(word, d.example)) out.examples.push({ en: tidySentence(d.example), ko: '' });
+          if (d.example && Core.findWord(word, d.example)) out.examples.push({ en: tidySentence(d.example), ko: '', from: 'dict' });
         }
       }
     }
     return out;
+  }
+
+  /* ---------- 좋은 예문 고르기 ----------
+     여러 곳에서 받은 예문에 점수를 매겨 위에서 3개를 골라요.
+     + 단어가 모양 그대로 들어 있음, 사람이 쓴 한국어 해석이 있음, 7~14단어, 사전 예문
+     − 너무 짧거나 김, Tom·Mary 같은 이름이 들어 있음, 앞의 예문과 시작이 같음 */
+
+  const COMMON_NAMES = /^(Tom|Mary|John|Jack|Bob|Alice|Ken|Mike|Jim|Bill|Ziri|Rima|Sami|Layla|Mennad|Baya|Skura|Yidir|Dan|Linda|Miroslav|Dmitri|Santiago|Fadil|Dania|Yanni|Taninna|Mark|Jane|Kate|Jessica|Paul|Peter|Lucy|Emily)$/;
+  const CAPITAL_OK = /^(I|I'm|I'll|I've|I'd|OK|Mr|Mrs|Ms|Dr|English|Korean|Korea|Japan|China|America|American|Christmas|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday|January|February|March|April|May|June|July|August|September|October|November|December)$/;
+  const SOURCE_BONUS = { wiki: 1.5, dict: 0.8, tatoeba: 0 };
+
+  function exampleScore(word, ex) {
+    const hit = Core.findWord(word, ex.en);
+    if (!hit) return -Infinity;
+    const tokens = ex.en.trim().split(/\s+/).map(t => t.replace(/[^A-Za-z']/g, ''));
+    const n = tokens.length;
+    let s = SOURCE_BONUS[ex.from] || 0;
+    if (hit.text.toLowerCase() === String(word).toLowerCase()) s += 2;      // reluctantly보다 reluctant
+    if (ex.ko) s += 2;                                                        // 사람이 쓴 해석
+    if (n >= 7 && n <= 14) s += 1.5; else if (n < 5 || n > 18) s -= 2.5; else if (n < 6) s -= 1;
+    const names = tokens.filter((t, i) => COMMON_NAMES.test(t) || (i > 0 && /^[A-Z][a-z]/.test(t) && !CAPITAL_OK.test(t)));
+    s -= 1.5 * names.length;
+    if (/[;:()\[\]]|\.\.\./.test(ex.en)) s -= 1;                              // 인용문·옛 글 느낌
+    if (/^to\s/i.test(ex.en) || /\b(something|somebody|sb|sth|one's|oneself)\b/i.test(ex.en)) s -= 4;   // 'to be eager to something' 같은 문형 설명
+    return s;
+  }
+
+  // 낱말이 거의 같은 두 문장(fruit / fruits)은 하나만 써요
+  function tooSimilar(a, b) {
+    const set = s => new Set(s.toLowerCase().replace(/[^a-z' ]/g, ' ').split(/\s+/).filter(Boolean).map(w => w.replace(/s$/, '')));
+    const A = set(a), B = set(b);
+    let same = 0;
+    for (const w of A) if (B.has(w)) same++;
+    return same / (A.size + B.size - same) >= 0.6;
   }
 
   function chooseExamples(word, lists, n) {
@@ -254,15 +341,26 @@
     const pool = [];
     for (const list of lists) {
       for (const ex of list) {
-        const k = ex.en.toLowerCase();
-        if (!ex.en || seen.has(k) || !Core.findWord(word, ex.en)) continue;
+        if (!ex || !ex.en) continue;
+        const k = ex.en.toLowerCase().replace(/[^a-z ]/g, '');
+        if (seen.has(k)) continue;
         seen.add(k);
-        pool.push(ex);
+        const score = exampleScore(word, ex);
+        if (score > -Infinity) pool.push({ ex, score, i: pool.length });
       }
     }
-    // 너무 짧거나 긴 문장은 뒤로
-    const fit = ex => { const c = wordCount(ex.en); return c >= 5 && c <= 16 ? 0 : 1; };
-    return pool.map((ex, i) => ({ ex, i })).sort((a, b) => fit(a.ex) - fit(b.ex) || a.i - b.i).slice(0, n).map(x => x.ex);
+    pool.sort((a, b) => b.score - a.score || a.i - b.i);
+    const out = [];
+    const starts = new Set();
+    for (const p of pool) {
+      const start = p.ex.en.toLowerCase().split(/\s+/).slice(0, 3).join(' ');
+      if (starts.has(start)) continue;                                        // 비슷하게 시작하는 문장은 하나만
+      if (out.some(o => tooSimilar(o.en, p.ex.en))) continue;                 // 거의 같은 문장도 하나만
+      starts.add(start);
+      out.push({ en: p.ex.en, ko: p.ex.ko || '' });
+      if (out.length >= n) break;
+    }
+    return out;
   }
 
   async function freeLookup(input) {
@@ -276,7 +374,7 @@
   }
 
   async function lookupEnglish(word, note, input, depth) {
-    // 다섯 곳에 한꺼번에 물어봐요 (해석 없는 Tatoeba 예문은 모자랄 때만 써요)
+    // 다섯 곳에 한꺼번에 물어봐요
     const [wikR, dictR, memR, tatKoR, tatEnR] = await Promise.allSettled([
       koWiktionary(word),
       getJSON('https://api.dictionaryapi.dev/api/v2/entries/en/' + encodeURIComponent(word)),
@@ -299,22 +397,28 @@
     const tatKo = tatKoR.status === 'fulfilled' ? tatKoR.value : [];
     const tatEn = tatEnR.status === 'fulfilled' ? tatEnR.value : [];
 
-    // 한국어 뜻: 위키낱말사전이 있으면 그걸 쓰고, 없을 때만 기계 번역(MyMemory)을 써요
+    // 한국어 뜻: ① 한국어 위키낱말사전 → ② 영어 위키낱말사전의 한국어 번역 → ③ 기계 번역(MyMemory)
     let meanings = [];
     let credit = null;
     if (wik && wik.meanings.length) {
       meanings = wik.meanings;
       credit = { name: '위키낱말사전', url: 'https://ko.wiktionary.org/wiki/' + encodeURIComponent(wik.title || word) };
     } else {
-      const ko = memR.status === 'fulfilled' ? koMeanings(memR.value, word) : [];
-      if (ko.length) {
-        meanings = [{ pos: '', ko: ko.join(', ') }];
-        credit = { name: '기계 번역(MyMemory)', url: '' };
+      let enKo = [];
+      try { enKo = await enWiktionaryKo(word); } catch (e) { enKo = []; }
+      if (enKo.length) {
+        meanings = enKo;
+        credit = { name: '영어 위키낱말사전', url: 'https://en.wiktionary.org/wiki/' + encodeURIComponent(word) };
+      } else {
+        const ko = memR.status === 'fulfilled' ? koMeanings(memR.value, word) : [];
+        if (ko.length) {
+          meanings = [{ pos: '', ko: ko.join(', ') }];
+          credit = { name: '기계 번역(MyMemory)', url: '' };
+        }
       }
     }
 
-    let examples = chooseExamples(word, [tatKo.slice(0, 2), dict.examples, tatKo.slice(2)], 3);
-    if (examples.length < 3) examples = chooseExamples(word, [examples, tatEn], 3);
+    const examples = chooseExamples(word, [(wik && wik.examples) || [], dict.examples, tatKo, tatEn], 3);
 
     if (!dict.defs.length && !meanings.length && !examples.length) {
       const offline = [wikR, dictR, memR, tatKoR].every(r => r.status === 'rejected' && r.reason && r.reason.code !== 'http');
@@ -333,7 +437,7 @@
     else if (!credit || !credit.url) warning = '사전에 없는 단어라 기계 번역으로 뜻을 붙였어요. 어색하면 ‘수정’에서 고쳐 주세요.';
 
     return {
-      entry: { word, phonetic: dict.phonetic, audio: dict.audio, meanings, defs: dict.defs, examples, source: 'free', credit },
+      entry: { word, phonetic: dict.phonetic, audio: dict.audio, meanings, defs: dict.defs, examples, source: 'free', credit, rev: FREE_REV },
       note,
       warning,
     };
@@ -473,9 +577,11 @@
   // 이미 저장한 단어의 뜻만 위키낱말사전으로 새로 받을 때
   async function dictionaryMeanings(word) {
     const r = await koWiktionary(word);
-    if (!r || !r.meanings.length) return null;
-    return { meanings: r.meanings, credit: { name: '위키낱말사전', url: 'https://ko.wiktionary.org/wiki/' + encodeURIComponent(r.title || word) } };
+    if (r && r.meanings.length) return { meanings: r.meanings, credit: { name: '위키낱말사전', url: 'https://ko.wiktionary.org/wiki/' + encodeURIComponent(r.title || word) } };
+    const en = await enWiktionaryKo(word);
+    if (en.length) return { meanings: en, credit: { name: '영어 위키낱말사전', url: 'https://en.wiktionary.org/wiki/' + encodeURIComponent(word) } };
+    return null;
   }
 
-  root.Dict = { lookup, aiLookup, aiErrorText, dictionaryMeanings, LookupError, HANGUL, parseKoWiktionary, lemmaCandidates };
+  root.Dict = { FREE_REV, lookup, aiLookup, aiErrorText, dictionaryMeanings, LookupError, HANGUL, parseKoWiktionary, parseEnWiktionaryKo, chooseExamples, lemmaCandidates };
 })(self);

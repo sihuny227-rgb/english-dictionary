@@ -244,8 +244,8 @@ dialog[open]{animation:up .22s ease-out}
     <section id="tab-settings" hidden>
       <div class="card">
         <h2>뜻·예문 찾는 방법</h2>
-        <label class="check"><input type="radio" name="src" value="ai"> AI 사전 (Claude · 내 API 키 필요) — 뜻·예문이 가장 좋아요</label>
         <label class="check"><input type="radio" name="src" value="free"> 무료 사전 (가입·키 필요 없음)</label>
+        <label class="check"><input type="radio" name="src" value="ai"> AI 사전 (유료 · 내 Claude API 키 필요)</label>
         <div id="aiBox" hidden>
           <details class="howto">
             <summary>API 키 만드는 법</summary>
@@ -269,7 +269,7 @@ dialog[open]{animation:up .22s ease-out}
           <div id="aiStatus"></div>
           <div id="aiRefreshBox"></div>
         </div>
-        <p class="muted">무료 사전의 한국어 뜻은 위키낱말사전(ko.wiktionary.org, CC BY-SA)에서 가져와요. 발음 기호·영영 풀이는 dictionaryapi.dev, 예문은 Tatoeba를 쓰고, 사전에 없는 단어의 뜻과 예문 해석만 기계 번역(MyMemory)으로 채워요. 기계 번역은 하루 사용량에 한도가 있어요.</p>
+        <p class="muted">무료 사전의 한국어 뜻은 위키낱말사전(ko.wiktionary.org · en.wiktionary.org, CC BY-SA)에서 가져와요. 예문은 위키낱말사전·dictionaryapi.dev·Tatoeba에서 모아 길이가 알맞고 사람이 번역한 문장을 먼저 골라요. 사전에 없는 단어의 뜻과 해석이 없는 예문만 기계 번역(MyMemory)으로 채우고, 기계 번역은 하루 사용량에 한도가 있어요.</p>
         <div id="refreshBox"></div>
       </div>
 
