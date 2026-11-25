@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>나만의 영어 사전</title>
+<meta name="description" content="단어를 찾으면 뜻·예문과 함께 단어장에 저장하고, 발음 듣기·퀴즈·단어 알림으로 외우는 영어 사전">
+<meta name="theme-color" content="#F3F4F7" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#12151B" media="(prefers-color-scheme: dark)">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="영어 사전">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Gowun+Batang:wght@700&family=IBM+Plex+Sans+KR:wght@400;500;600&display=swap">
+<style>
+/* 휴대폰 한 손 사용 기준 한 줄 레이아웃(최대 720px). 위쪽에 탭 4개(사전·단어장·퀴즈·설정), 아래로 카드. */
+:root{
+  --bg:#F3F4F7; --card:#FFFFFF; --ink:#1A1F2B; --muted:#5F6676; --line:#DCE0E8;
+  --accent:#2B5A9E; --accent-ink:#FFFFFF; --accent-soft:#E3EBF7;
+  --ok:#2F7A55; --ok-soft:#E2F1E8; --warn:#B4542D; --warn-soft:#F8E8DF; --amber:#9A6A12; --amber-soft:#F6EDD9;
+  --font-display:"Gowun Batang","Apple SD Gothic Neo","Malgun Gothic",serif;
+  --font-body:"IBM Plex Sans KR","Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif;
+  padding-top:env(safe-area-inset-top,0px);
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#12151B; --card:#1B1F27; --ink:#E7EAF0; --muted:#9AA2B1; --line:#2C323D;
+    --accent:#86AEEA; --accent-ink:#0E1420; --accent-soft:#1F2C42;
+    --ok:#6CC596; --ok-soft:#1B3127; --warn:#E48A62; --warn-soft:#3A2820; --amber:#E0B25A; --amber-soft:#3A2F17;
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--font-body);-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:720px;margin:0 auto;padding:16px 16px calc(80px + env(safe-area-inset-bottom,0px))}
+header h1{font-family:var(--font-display);font-weight:700;font-size:25px;margin:0;text-wrap:balance}
+header p{margin:2px 0 0;color:var(--muted);font-size:14px}
+.tabs{position:sticky;top:0;z-index:5;display:flex;background:var(--bg);border-bottom:1px solid var(--line);margin:12px -16px 16px;padding:0 8px}
+.tabs button{flex:1 1 0;background:none;border:0;padding:12px 4px 10px;color:var(--muted);border-bottom:2px solid transparent;white-space:nowrap;position:relative}
+.tabs button.on{color:var(--ink);border-color:var(--ink);font-weight:600}
+.badge{display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;font-size:11px;line-height:18px;font-weight:600;background:var(--line);color:var(--ink);vertical-align:1px;margin-left:2px}
+.badge.warn{background:var(--warn);color:#fff}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px;margin-bottom:14px}
+.card h2{font-family:var(--font-display);font-size:18px;margin:0 0 10px;text-wrap:balance}
+.lbl{font-size:13px;color:var(--muted);display:block;margin:12px 0 6px}
+input,select,textarea{width:100%;font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 10px}
+textarea{resize:vertical}
+input[type=checkbox],input[type=radio]{width:20px;height:20px;margin:0;accent-color:var(--accent);flex:none}
+input[type=range]{padding:0;accent-color:var(--accent);background:none;border:0}
+.row{display:flex;gap:8px;align-items:center}
+.row>input,.row>select{flex:1;min-width:0}
+.btn{background:var(--accent);color:var(--accent-ink);border:1px solid var(--accent);border-radius:8px;padding:10px 14px;font-weight:600}
+.btn.ghost{background:transparent;color:var(--ink);border-color:var(--line);font-weight:500}
+.btn.sm{padding:6px 10px;font-size:13px}
+.btn.danger{background:var(--warn);border-color:var(--warn);color:#fff}
+.btn:disabled{opacity:.5;cursor:default}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.btns .btn{flex:1 1 auto}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--line);background:var(--bg);border-radius:20px;padding:6px 12px;font-size:13px}
+.chip.on{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+.muted{color:var(--muted);font-size:13px}
+.empty{color:var(--muted);font-size:14px;padding:8px 0}
+.notice{border-radius:10px;padding:10px 12px;margin:0 0 12px;font-size:14px;background:var(--accent-soft)}
+.notice.warn{background:var(--warn-soft)}
+.check{display:flex;gap:10px;align-items:center;padding:6px 0}
+
+/* 찾기 */
+.search{display:flex;gap:8px;margin-bottom:14px}
+.search input{flex:1;font-size:17px;padding:11px 12px;background:var(--card)}
+.search .btn{padding-inline:18px}
+.loading{display:flex;align-items:center;gap:10px;color:var(--muted)}
+.spin{width:18px;height:18px;border-radius:50%;border:2px solid var(--line);border-top-color:var(--accent);animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* 단어 카드 */
+.wc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
+.hw{font-family:var(--font-display);font-size:30px;line-height:1.2;font-weight:700;word-break:break-word}
+.ph{color:var(--muted);font-size:14px;margin-top:2px}
+.say{flex:none;display:inline-grid;place-items:center;width:36px;height:36px;border-radius:50%;border:1px solid var(--line);background:var(--bg);color:var(--accent);padding:0}
+.say.lg{width:46px;height:46px}
+.say.playing{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.means{list-style:none;margin:12px 0 0;padding:0}
+.means li{padding:2px 0;font-size:16px}
+.pos{display:inline-block;font-size:12px;background:var(--accent-soft);color:var(--accent);border-radius:6px;padding:1px 7px;margin-right:6px;vertical-align:2px}
+.sec{font-size:13px;color:var(--muted);margin:16px 0 4px;font-weight:600}
+ol.ex{list-style:none;margin:0;padding:0}
+ol.ex li{display:flex;gap:10px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--line)}
+ol.ex li:first-child{border-top:0}
+ol.ex .n{flex:none;width:22px;height:22px;border-radius:50%;background:var(--accent-soft);color:var(--accent);display:grid;place-items:center;font-size:12px;margin-top:2px}
+ol.ex .body{flex:1;min-width:0}
+.en{font-size:15.5px;word-break:break-word}
+.en mark,.qsent mark{background:none;color:var(--accent);font-weight:700}
+.ko{color:var(--muted);font-size:14px;margin-top:2px}
+details{margin-top:12px}
+summary{cursor:pointer;color:var(--muted);font-size:13px}
+.defs{margin:6px 0 0;padding-left:18px;font-size:14px}
+.defs li{margin:3px 0}
+.stats{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:14px;padding-top:12px;border-top:1px dashed var(--line);font-size:13px;color:var(--muted)}
+.stats b{color:var(--ink);font-weight:600}
+
+/* 외운 정도 */
+.lv{display:inline-block;font-size:11.5px;border-radius:6px;padding:1px 7px;white-space:nowrap;font-weight:500}
+.lv0{background:var(--line);color:var(--muted)}
+.lv1{background:var(--warn-soft);color:var(--warn)}
+.lv2{background:var(--amber-soft);color:var(--amber)}
+.lv3{background:var(--accent-soft);color:var(--accent)}
+.lv4{background:var(--ok-soft);color:var(--ok)}
+.mbar{display:flex;height:12px;border-radius:6px;overflow:hidden;background:var(--line);margin:10px 0 8px}
+.mbar i{display:block;height:100%}
+.mbar .b0{background:var(--muted);opacity:.45}.mbar .b1{background:var(--warn)}.mbar .b2{background:var(--amber)}.mbar .b3{background:var(--accent)}.mbar .b4{background:var(--ok)}
+.legend{display:flex;flex-wrap:wrap;gap:4px 12px;font-size:12.5px;color:var(--muted)}
+.legend span::before{content:"";display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:0;background:currentColor}
+.legend .k0{color:var(--muted)}.legend .k1{color:var(--warn)}.legend .k2{color:var(--amber)}.legend .k3{color:var(--accent)}.legend .k4{color:var(--ok)}
+
+/* 단어장 */
+.listtools{display:flex;flex-direction:column;gap:10px;margin-bottom:6px}
+ul.wl{list-style:none;margin:0;padding:0}
+ul.wl li{display:flex;gap:10px;align-items:center;padding:11px 0;border-top:1px solid var(--line);cursor:pointer}
+ul.wl li:first-child{border-top:0}
+ul.wl .body{flex:1;min-width:0}
+ul.wl .w{font-weight:600;font-size:16px;margin-right:6px}
+ul.wl .sub{color:var(--muted);font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.count{font-size:13px;color:var(--muted);margin:4px 0 0}
+
+/* 퀴즈 */
+.bignum{font-family:var(--font-display);font-size:40px;line-height:1;font-weight:700}
+.bignum small{font-family:var(--font-body);font-size:15px;font-weight:500;color:var(--muted);margin-left:4px}
+.qtop{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted)}
+.prog{height:6px;background:var(--line);border-radius:6px;overflow:hidden;margin:8px 0 16px}
+.prog i{display:block;height:100%;background:var(--accent);transition:width .3s}
+.qlabel{font-size:13px;color:var(--muted);margin-bottom:8px}
+.qword{display:flex;align-items:center;gap:12px;font-family:var(--font-display);font-size:32px;font-weight:700;margin-bottom:16px;word-break:break-word}
+.qko{font-size:20px;font-weight:600;margin-bottom:14px}
+.qsent{font-size:18px;line-height:1.6;margin-bottom:6px;word-break:break-word}
+.blank{display:inline-block;min-width:84px;border-bottom:2px solid var(--accent);color:var(--accent);text-align:center;font-weight:700}
+.qsent-ko{color:var(--muted);font-size:14px;margin-bottom:16px}
+.choices{display:grid;gap:8px}
+.choice{text-align:left;background:var(--bg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:16px}
+.choice.right{background:var(--ok-soft);border-color:var(--ok);color:var(--ok);font-weight:600}
+.choice.wrong{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
+.choice:disabled{cursor:default}
+.typed{display:flex;gap:8px}
+.typed input{font-size:18px;flex:1;min-width:0}
+.hint{letter-spacing:.06em;margin-top:10px;color:var(--accent);font-size:16px;font-weight:600;white-space:pre-wrap}
+.fb{margin-top:16px;border-radius:12px;padding:12px 14px}
+.fb.ok{background:var(--ok-soft)}
+.fb.bad{background:var(--warn-soft)}
+.fb .t{font-weight:700;margin-bottom:6px}
+.fb.ok .t{color:var(--ok)}.fb.bad .t{color:var(--warn)}
+.fb .line{display:flex;gap:8px;align-items:center;margin-top:6px}
+.fb .line .body{flex:1;min-width:0}
+.res li .mark{flex:none;width:22px;text-align:center;font-weight:700}
+.res li .mark.o{color:var(--ok)}.res li .mark.x{color:var(--warn)}
+
+/* 아래에서 올라오는 창 */
+dialog{border:0;padding:0;margin:auto auto 0;width:100%;max-width:720px;max-height:88vh;border-radius:18px 18px 0 0;background:var(--card);color:var(--ink);box-shadow:0 -8px 30px rgba(0,0,0,.18)}
+dialog::backdrop{background:rgba(10,14,22,.45)}
+dialog[open]{animation:up .22s ease-out}
+@keyframes up{from{transform:translateY(30px);opacity:.6}to{transform:none;opacity:1}}
+.sheet{padding:14px 16px calc(18px + env(safe-area-inset-bottom,0px));overflow:auto;max-height:88vh}
+.sheet-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.x{background:none;border:0;font-size:26px;line-height:1;color:var(--muted);padding:4px 8px}
+
+/* 수정 */
+.exrow{display:grid;grid-template-columns:1fr auto;gap:6px;padding:8px 0;border-top:1px dashed var(--line)}
+.exrow:first-of-type{border-top:0}
+.exrow input{grid-column:1}
+.exrow .x{grid-column:2;grid-row:1 / span 2;align-self:center}
+
+.toast{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translate(-50%,10px);width:max-content;max-width:calc(100% - 32px);padding:10px 14px;border-radius:12px;background:var(--ink);color:var(--bg);font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s;z-index:20;display:flex;gap:12px;align-items:center}
+.toast.show{opacity:1;transform:translate(-50%,0);pointer-events:auto}
+.toast button{background:none;border:0;color:var(--accent-soft);font-weight:700;padding:2px 4px;text-decoration:underline}
+.update{position:fixed;left:16px;right:16px;bottom:calc(16px + env(safe-area-inset-bottom,0px));z-index:15;display:flex;gap:10px;align-items:center;justify-content:space-between;box-shadow:0 6px 20px rgba(0,0,0,.15);max-width:688px;margin:0 auto}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>나만의 영어 사전</h1>
+    <p id="summary">단어장을 불러오는 중…</p>
+  </header>
+
+  <nav class="tabs" aria-label="화면">
+    <button data-tab="dict" class="on">사전</button>
+    <button data-tab="list">단어장 <span class="badge" id="listBadge" hidden></span></button>
+    <button data-tab="quiz">퀴즈 <span class="badge warn" id="dueBadge" hidden></span></button>
+    <button data-tab="settings">설정</button>
+  </nav>
+
+  <main>
+    <!-- 사전 -->
+    <section id="tab-dict">
+      <form class="search" id="searchForm" autocomplete="off">
+        <input id="q" type="search" placeholder="영어 단어 입력 (한글도 돼요)" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search" aria-label="찾을 단어" maxlength="60">
+        <button class="btn">찾기</button>
+      </form>
+      <div id="result"></div>
+      <div class="card" id="recentCard">
+        <h2>최근에 저장한 단어</h2>
+        <ul class="wl" id="recentList"></ul>
+      </div>
+    </section>
+
+    <!-- 단어장 -->
+    <section id="tab-list" hidden>
+      <div class="card">
+        <div class="listtools">
+          <input id="filter" type="search" placeholder="단어장에서 찾기 (영어·한글)" autocapitalize="off" spellcheck="false" aria-label="단어장에서 찾기">
+          <div class="chips" id="sortChips">
+            <button class="chip on" data-sort="recent">최근 저장</button>
+            <button class="chip" data-sort="abc">ABC순</button>
+            <button class="chip" data-sort="due">복습 가까운 순</button>
+            <button class="chip" data-sort="weak">약한 단어</button>
+          </div>
+          <p class="count" id="listCount"></p>
+        </div>
+        <ul class="wl" id="wordList"></ul>
+      </div>
+    </section>
+
+    <!-- 퀴즈 -->
+    <section id="tab-quiz" hidden>
+      <div id="quiz"></div>
+    </section>
+
+    <!-- 설정 -->
+    <section id="tab-settings" hidden>
+      <div class="card">
+        <h2>단어 알림</h2>
+        <p class="notice" id="notifyNote">정해진 시간마다 단어장에서 단어 하나를 골라 예문 3개와 함께 보여 줘요. <b>이 앱을 열어 둔 동안에만</b> 알림이 와요.</p>
+        <label class="check"><input type="checkbox" id="nOn"> 단어 알림 켜기</label>
+        <span class="lbl">얼마마다</span>
+        <select id="nEvery">
+          <option value="15">15분마다</option>
+          <option value="30">30분마다</option>
+          <option value="60">1시간마다</option>
+          <option value="120">2시간마다</option>
+          <option value="180">3시간마다</option>
+          <option value="240">4시간마다</option>
+        </select>
+        <span class="lbl">알림 받을 시간대</span>
+        <div class="row"><select id="nFrom" aria-label="시작 시각"></select><span>부터</span><select id="nTo" aria-label="끝 시각"></select><span>까지</span></div>
+        <label class="check"><input type="checkbox" id="nWeak"> 덜 외운 단어를 더 자주 보여 주기</label>
+        <p class="muted" id="nNext"></p>
+        <div class="btns">
+          <button class="btn ghost sm" id="nTestCard">단어 카드 띄워 보기</button>
+          <button class="btn ghost sm" id="nTestPush">휴대폰 알림 보내 보기</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>뜻·예문 찾는 방법</h2>
+        <label class="check"><input type="radio" name="src" value="free"> 무료 사전 (가입·키 필요 없음)</label>
+        <label class="check"><input type="radio" name="src" value="ai"> AI 사전 (Claude · 내 API 키 필요)</label>
+        <div id="aiBox" hidden>
+          <span class="lbl">Claude API 키</span>
+          <input id="aiKey" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
+          <span class="lbl">모델</span>
+          <select id="aiModel">
+            <option value="claude-opus-5-5">Claude Opus 5.5 — 가장 정확 (단어 하나에 1~2센트쯤)</option>
+            <option value="claude-haiku-5-5">Claude Haiku 5.5 — 아주 저렴 (단어 100개에 약 5센트)</option>
+          </select>
+          <p class="muted">키는 이 휴대폰 안에만 저장되고 Anthropic(api.anthropic.com)으로만 보내요. 백업 파일에도 들어가지 않아요. AI로 못 찾으면 무료 사전으로 찾아요.</p>
+        </div>
+        <p class="muted">무료 사전은 영어 사전(dictionaryapi.dev), 예문(Tatoeba), 번역(MyMemory)을 함께 써요. 무료 번역은 하루 사용량에 한도가 있어요.</p>
+      </div>
+
+      <div class="card">
+        <h2>발음</h2>
+        <span class="lbl">목소리</span>
+        <select id="voice"><option value="">자동 (미국 영어)</option></select>
+        <span class="lbl">빠르기 <b id="rateVal"></b></span>
+        <input type="range" id="rate" min="0.5" max="1.3" step="0.1">
+        <label class="check"><input type="checkbox" id="autoSpeak"> 퀴즈 정답을 확인하면 자동으로 읽어 주기</label>
+        <div class="btns"><button class="btn ghost sm" id="voiceTest">들어 보기</button></div>
+      </div>
+
+      <div class="card">
+        <h2>퀴즈</h2>
+        <span class="lbl">한 번에 푸는 문제 수</span>
+        <select id="quizSize">
+          <option value="5">5문제</option>
+          <option value="10">10문제</option>
+          <option value="15">15문제</option>
+          <option value="20">20문제</option>
+        </select>
+      </div>
+
+      <div class="card">
+        <h2>백업</h2>
+        <p class="muted">단어장과 퀴즈 기록은 이 휴대폰(브라우저) 안에만 저장돼요. 휴대폰을 바꾸기 전에는 백업 파일을 저장해 두세요.</p>
+        <div class="btns">
+          <button class="btn ghost" id="backupSave">백업 파일 저장</button>
+          <button class="btn ghost" id="backupLoad">백업 불러오기</button>
+        </div>
+        <input type="file" id="backupFile" accept="application/json,.json" hidden>
+      </div>
+    </section>
+  </main>
+</div>
+
+<dialog id="sheet" aria-label="단어"><div class="sheet" id="sheetBody"></div></dialog>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<div class="notice update" id="update" hidden><span>새 버전이 준비됐어요.</span><button class="btn sm" id="updateBtn">지금 적용</button></div>
+
+<script src="core.js"></script>
+<script src="dict.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
